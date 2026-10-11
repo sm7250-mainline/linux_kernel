@@ -184,6 +184,17 @@ struct msm_pinctrl_soc_data {
 	bool wakeirq_dual_edge_errata;
 	unsigned int gpio_func;
 	unsigned int egpio_func;
+	/* 可选：覆盖默认的 valid_mask 初始化（个别 SoC 存在无响应引脚槽，
+	 * 需在 gpio/irq 两层一并标记无效，见 gpiochip_add_data 的逐脚
+	 * get_direction 初始化路径） */
+	int (*init_valid_mask)(struct gpio_chip *gc,
+			       unsigned long *valid_mask,
+			       unsigned int ngpios);
+	/* 若为 true：gpiochip 不提供 get_direction。gpiochip_add_data 会对每个
+	 * valid 引脚读 ctl_reg 初始化 FLAG_IS_OUT——本平台存在无响应槽位
+	 * （gpio0/59 读挂实证）且无法静态枚举；下游 4.19 注册时零硬件访问。
+	 * 置 NULL 让注册循环整体走软件分支，probe 不碰任何引脚寄存器。 */
+	bool no_get_direction;
 };
 
 extern const struct dev_pm_ops msm_pinctrl_dev_pm_ops;

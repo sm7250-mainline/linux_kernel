@@ -582,6 +582,20 @@ static const struct clk_rpmh_desc clk_rpmh_milos = {
 	.num_clks = ARRAY_SIZE(milos_rpmh_clocks),
 };
 
+/* picasso bring-up: SM7250/lito 的 cmd-db 资源集比 kona 精简（实测无 lnbclka1、
+ * 无 IP0，qnoc 也报缺 SN11/SN14/SH10/SH8；clk-rpmh 缺资源是整体 -ENODEV 不是跳过）。
+ * 故只声明 GCC 硬依赖的 bi_tcxo/bi_tcxo_ao（"xo.lvl"，下游固件必然提供——
+ * 下游 rpmhclk 就靠它工作）。ln_bb/rf 等 WiFi 阶段按需增补。 */
+static struct clk_hw *sm7250_rpmh_clocks[] = {
+	[RPMH_CXO_CLK]		= &clk_rpmh_bi_tcxo_div2.hw,
+	[RPMH_CXO_CLK_A]	= &clk_rpmh_bi_tcxo_div2_ao.hw,
+};
+
+static const struct clk_rpmh_desc clk_rpmh_sm7250 = {
+	.clks = sm7250_rpmh_clocks,
+	.num_clks = ARRAY_SIZE(sm7250_rpmh_clocks),
+};
+
 static struct clk_hw *sm8250_rpmh_clocks[] = {
 	[RPMH_CXO_CLK]		= &clk_rpmh_bi_tcxo_div2.hw,
 	[RPMH_CXO_CLK_A]	= &clk_rpmh_bi_tcxo_div2_ao.hw,
@@ -1115,6 +1129,7 @@ static const struct of_device_id clk_rpmh_match_table[] = {
 	{ .compatible = "qcom,sm4450-rpmh-clk", .data = &clk_rpmh_sm4450},
 	{ .compatible = "qcom,sm6350-rpmh-clk", .data = &clk_rpmh_sm6350},
 	{ .compatible = "qcom,sm8150-rpmh-clk", .data = &clk_rpmh_sm8150},
+	{ .compatible = "qcom,sm7250-rpmh-clk", .data = &clk_rpmh_sm7250},
 	{ .compatible = "qcom,sm8250-rpmh-clk", .data = &clk_rpmh_sm8250},
 	{ .compatible = "qcom,sm8350-rpmh-clk", .data = &clk_rpmh_sm8350},
 	{ .compatible = "qcom,sm8450-rpmh-clk", .data = &clk_rpmh_sm8450},

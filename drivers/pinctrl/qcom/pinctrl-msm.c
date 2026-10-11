@@ -1499,7 +1499,18 @@ static int msm_gpio_init(struct msm_pinctrl *pctrl)
 	girq->default_type = IRQ_TYPE_NONE;
 	girq->handler = handle_bad_irq;
 	girq->parents[0] = pctrl->irq;
-	girq->init_valid_mask = msm_gpio_irq_init_valid_mask;
+	/* 无响应槽位不可枚举的 SoC：注册阶段零引脚寄存器访问（下游 4.19
+	 * 同款惰性行为），get_direction 仅在单脚被 request 时才有意义 */
+	if (pctrl->soc->no_get_direction)
+		chip->get_direction = NULL;
+
+	girq->init_valid_mask = pctrl->soc->init_valid_mask ?:
+				msm_gpio_irq_init_valid_mask;
+	/* gpio 层的 valid_mask（gpiodev->valid_mask）：必须设 chip->init_valid_mask
+	 * 才会分配掩码（NULL 掩码 = 全部 valid）。gpiochip_add_data 的逐脚
+	 * get_direction 初始化用它挡无响应引脚槽。 */
+	if (pctrl->soc->init_valid_mask)
+		chip->init_valid_mask = pctrl->soc->init_valid_mask;
 
 	ret = devm_gpiochip_add_data(pctrl->dev, &pctrl->chip, pctrl);
 	if (ret) {

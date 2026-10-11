@@ -1142,6 +1142,14 @@ config REGULATOR_QCOM_PM8008
 	  Select this option to enable support for the voltage regulators in
 	  Qualcomm PM8008 PMICs.
 
+config REGULATOR_QCOM_LCDB
+	tristate "QCOM PM8150L LCDB LCD bias regulator support"
+	depends on SPMI || COMPILE_TEST
+	help
+	  This driver supports the LCDB (LCD bias) module present on the
+	  Qualcomm PM8150L PMIC. It provides the LDO (avdd) and NCP (avee)
+	  bias rails required by LCD panels on SM7250 devices.
+
 config REGULATOR_QCOM_REFGEN
 	tristate "Qualcomm REFGEN regulator driver"
 	depends on ARCH_QCOM || COMPILE_TEST

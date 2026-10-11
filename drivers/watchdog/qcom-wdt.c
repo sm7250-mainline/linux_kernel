@@ -354,6 +354,14 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	/*
+	 * picasso bring-up: unconditionally disable the bootloader-started
+	 * watchdog so a stalled bring-up does not silently reset the device.
+	 * (量产前应恢复接管喂狗)
+	 */
+	writel(0, wdt_addr(wdt, WDT_EN));
+	pr_info("qcom_wdt: probed, watchdog disabled for bringup\n");
+
 	platform_set_drvdata(pdev, wdt);
 	return 0;
 }
@@ -386,6 +394,8 @@ static const struct of_device_id qcom_wdt_of_table[] = {
 	{ .compatible = "qcom,apss-wdt-ipq5332", .data = &match_data_ipq9574 },
 	{ .compatible = "qcom,apss-wdt-ipq5424", .data = &match_data_ipq5424 },
 	{ .compatible = "qcom,apss-wdt-ipq9574", .data = &match_data_ipq9574 },
+	{ .compatible = "qcom,apss-wdt-sm7250", .data = &match_data_apcs_tmr },
+	{ .compatible = "qcom,apss-wdt-sm8250", .data = &match_data_apcs_tmr },
 	{ .compatible = "qcom,kpss-timer", .data = &match_data_apcs_tmr },
 	{ .compatible = "qcom,scss-timer", .data = &match_data_apcs_tmr },
 	{ .compatible = "qcom,kpss-wdt", .data = &match_data_kpss },

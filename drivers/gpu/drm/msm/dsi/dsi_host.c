@@ -276,6 +276,18 @@ int dsi_clk_init_6g_v2(struct msm_dsi_host *msm_host)
 			__func__, ret);
 	}
 
+	/*
+	 * picasso/sm7250: assigned-clock-parents 的 reparent 在 DSI probe
+	 * 阶段失败（of_clk_set_defaults -22）且无人重试 → byte0_clk_src 悬在
+	 * 错误 parent → link clk enable "stuck at off"。上游 v2.9 平台为此改
+	 * 在 power_on 时显式 reparent。此处以可选方式取同名时钟（DTS 提供则
+	 * 启用显式 reparent；未提供的老 v2.4 平台行为不变）。
+	 */
+	msm_host->byte_src_clk = devm_clk_get_optional(&pdev->dev, "byte_src");
+	msm_host->dsi_pll_byte_clk = devm_clk_get_optional(&pdev->dev, "dsi_pll_byte");
+	msm_host->pixel_src_clk = devm_clk_get_optional(&pdev->dev, "pixel_src");
+	msm_host->dsi_pll_pixel_clk = devm_clk_get_optional(&pdev->dev, "dsi_pll_pixel");
+
 	return ret;
 }
 
@@ -385,6 +397,26 @@ int dsi_link_clk_set_rate_6g(struct msm_dsi_host *msm_host)
 	unsigned long byte_intf_clk_rate;
 	long rounded_byte_clk_rate;
 	int ret;
+
+	/*
+	 * picasso/sm7250: probe 阶段 assigned-clock-parents reparent 失败（-22）
+	 * 后无人重试；照上游 v2.9 的 dsi_link_clk_set_rate_6g_v2_9 在此处
+	 * （PHY 已 enable 的 power_on 阶段）显式 reparent。时钟引用可选，
+	 * 未提供的老 v2.4 平台行为不变。
+	 */
+	if (msm_host->byte_src_clk) {
+		ret = clk_set_parent(msm_host->byte_src_clk, msm_host->dsi_pll_byte_clk);
+		if (ret)
+			dev_err(&msm_host->pdev->dev,
+				"Failed to parent byte_src -> dsi_pll_byte: %d\n", ret);
+	}
+
+	if (msm_host->pixel_src_clk) {
+		ret = clk_set_parent(msm_host->pixel_src_clk, msm_host->dsi_pll_pixel_clk);
+		if (ret)
+			dev_err(&msm_host->pdev->dev,
+				"Failed to parent pixel_src -> dsi_pll_pixel: %d\n", ret);
+	}
 
 	rounded_byte_clk_rate = clk_round_rate(msm_host->byte_clk,
 					       msm_host->byte_clk_rate);

@@ -886,6 +886,38 @@ static const struct adreno_info a6xx_gpus[] = {
 			{ 180, 1 },
 		),
 	}, {
+		.chip_ids = ADRENO_CHIP_IDS(0x06020002),
+		.family = ADRENO_6XX_GEN3,
+		/* picasso/lito A620（Adreno 620 @ 750MHz，SM7250）。固件名与
+		 * YAAP ROM vendor 文件逐字一致（ROM 配套内核 gpulist 写死）：
+		 * sqe=a650_sqe.fw、gmu=a650_gmu.bin、zap=a620_zap.mdt+bXX。
+		 * 下游实锤：REV(6,2,0,ANY)、GMU 2.0、a650 家族（GEN3）、
+		 * gmem=SZ_512K、prim_fifo_threshold=0x10000。chipid 0x06020002
+		 * = find_chipid 对 compatible "qcom,adreno-620.2" 的解析值。
+		 * speedbin fuse 0/132/115 = 下游 lito-gpu.dtsi 三个 SKU。 */
+		.fw = {
+			[ADRENO_FW_SQE] = "a650_sqe.fw",
+			[ADRENO_FW_GMU] = "a650_gmu.bin",
+		},
+		.gmem = SZ_512K,
+		.inactive_period = DRM_MSM_INACTIVE_PERIOD,
+		.quirks = ADRENO_QUIRK_HAS_CACHED_COHERENT |
+			  ADRENO_QUIRK_HAS_HW_APRIV,
+		.funcs = &a6xx_gpu_funcs,
+		.zapfw = "a620_zap.mdt",
+		.a6xx = &(const struct a6xx_info) {
+			.hwcg = a620_hwcg,
+			.protect = &a650_protect,
+			.gbif_cx = a640_gbif,
+			.gmu_cgc_mode = 0x00020200,
+			.prim_fifo_threshold = 0x00010000,
+		},
+		.speedbins = ADRENO_SPEEDBINS(
+			{ 0, 0 },
+			{ 132, 1 },
+			{ 115, 2 },
+		),
+	}, {
 		.chip_ids = ADRENO_CHIP_IDS(0x06020100),
 		.family = ADRENO_6XX_GEN3,
 		.fw = {
