@@ -924,6 +924,7 @@ static int a6xx_cp_init(struct msm_gpu *gpu)
 	OUT_RING(ring, 0x00000000);
 
 	a6xx_flush(gpu, ring);
+
 	return a6xx_idle(gpu, ring) ? 0 : -EINVAL;
 }
 
@@ -1190,6 +1191,56 @@ static int hw_init(struct msm_gpu *gpu)
 		ret = a6xx_gmu_set_oob(&a6xx_gpu->gmu, GMU_OOB_GPU_SET);
 		if (ret)
 			return ret;
+
+		/*
+		 * picasso/lito A620 (chipid 0x0602xxxx)：GMU fw 2.1.8 的 OOB
+		 * GPU_SET 上电序列无法点亮 gfx3d 根时钟——GDSC 抬起、RCG 指源、
+		 * 分支 enable 置位全部完成（GMU log 以 0xdeadba55 自述重试失败
+		 * 58 次），唯独根时钟不起、GPU 核心寄存器读写全灭。实测矩阵：
+		 * fw 配置的 PLL0 虽然 mode 位报 LOCKED 但输出实际死（lock 位
+		 * 不可信）；根使能需要"ROOT_EN 强制 + 分支 0→1 重触发 +
+		 * UPDATE"组合拳，且组合拳只在源真正运行时有效——切到 XO 后
+		 * 组合拳全通（GPU 以 19.2MHz 完整初始化、zap 认证、fbdev
+		 * 渲染全链验证）。fw 成功时 SPTPRAC bit7 已清零，本序列不
+		 * 执行（幂等）。性能恢复（PLL0/gpll0 高频档）见 TODO。
+		 * 寄存器为 GPU 基址相对 dword 偏移：
+		 *   0x24407 = GPU_CC gfx3d RCG CMD  (GPU_CC+0x101c)
+		 *   0x24408 = GPU_CC gfx3d RCG CFG  (GPU_CC+0x1020)
+		 *   0x24415 = GPU_CC gfx3d CBCR     (GPU_CC+0x1054)
+		 *   0x24419 = GPU_CC gx_gmu CBCR    (GPU_CC+0x1064)
+		 */
+		if ((adreno_gpu->chip_id & 0xfffff000) == 0x06020000 &&
+		    (gmu_read(gmu, REG_A6XX_GMU_SPTPRAC_PWR_CLK_STATUS) & 0x80)) {
+			int w;
+
+			/* gx_gmu 分支（成功路径实证步骤，无害） */
+			gmu_write(gmu, 0x24419, 0x1);
+			udelay(20);
+
+			/* RCG 切到 XO（src0，必活）+ UPDATE */
+			gmu_write(gmu, 0x24408, 0x001);
+			gmu_write(gmu, 0x24407, 0x1);
+			udelay(100);
+
+			/* ROOT_EN 强制根使能（主线 clk_rcg2_set_force_enable 原语） */
+			gmu_write(gmu, 0x24407, 0x2);
+			for (w = 0; w < 500; w++) {
+				if (!(gmu_read(gmu, 0x24407) & 0x80000000))
+					break;
+				udelay(1);
+			}
+
+			/* 分支 0→1 重触发 + 组合 UPDATE */
+			gmu_write(gmu, 0x24415, 0x0);
+			udelay(20);
+			gmu_write(gmu, 0x24415, 0x1);
+			gmu_write(gmu, 0x24407, 0x3);	/* ROOT_EN | UPDATE */
+			udelay(100);
+
+			if (gmu_read(gmu, REG_A6XX_GMU_SPTPRAC_PWR_CLK_STATUS) & 0x80)
+				DRM_DEV_ERROR(&gpu->pdev->dev,
+					"gfx3d root clock did not turn on\n");
+		}
 	}
 
 	/* Clear GBIF halt in case GX domain was not collapsed */

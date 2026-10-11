@@ -818,7 +818,12 @@ static int a6xx_hfi_send_bw_table(struct a6xx_gmu *gmu)
 		a619_build_bw_table(msg);
 	else if (adreno_is_a640_family(adreno_gpu))
 		a640_build_bw_table(msg);
-	else if (adreno_is_a650(adreno_gpu))
+	else if (adreno_is_a650(adreno_gpu) ||
+		 (adreno_gpu->chip_id & 0xfffff000) == 0x06020000)
+		/* picasso/lito A620：与 kona a650 同为 GMU 2.0/fw 2.1.8 代，
+		 * 用 a650 的"single off"表。原 fallback 落到 a6xx_build_bw_table
+		 * （a630 时代的 cmd-db 地址）导致 GMU 投票 fault → graceful
+		 * death（实测 VOTE/OOB 全超时的根因）。 */
 		a650_build_bw_table(msg);
 	else if (adreno_is_7c3(adreno_gpu))
 		adreno_7c3_build_bw_table(msg);

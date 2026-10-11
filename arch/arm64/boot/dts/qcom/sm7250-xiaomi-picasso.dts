@@ -1841,7 +1841,7 @@
 				opp-750000000 {
 					opp-hz = <0x00 0x2cb41780>;
 					opp-level = <0x180>;
-					opp-supported-hw = <0x01>;
+					opp-supported-hw = <0x07>;
 				};
 
 				opp-625000000 {

@@ -263,14 +263,12 @@ static int g7a_37_02_0a_dsc_prepare(struct drm_panel *panel)
 	int ret;
 
 	/* 上电：vddio → 1ms → avdd+avee → 10ms（下游实测时序） */
-	pr_info("DBRG: panel prepare entry\n");
 	ret = regulator_enable(ctx->supplies[0].consumer);
 	if (ret) {
 		dev_err(dev, "Failed to enable vddio: %d\n", ret);
 		return ret;
 	}
 	usleep_range(1000, 1500);
-	pr_info("DBRG: panel vddio on\n");
 
 	ret = regulator_bulk_enable(2, &ctx->supplies[1]);
 	if (ret) {
@@ -279,10 +277,8 @@ static int g7a_37_02_0a_dsc_prepare(struct drm_panel *panel)
 		return ret;
 	}
 	usleep_range(10000, 11000);
-	pr_info("DBRG: panel avdd/avee on\n");
 
 	g7a_37_02_0a_dsc_reset(ctx);
-	pr_info("DBRG: panel reset done\n");
 
 	ret = g7a_37_02_0a_dsc_on(ctx);
 	if (ret < 0) {
@@ -290,7 +286,6 @@ static int g7a_37_02_0a_dsc_prepare(struct drm_panel *panel)
 		gpiod_set_value_cansleep(ctx->reset_gpio, 1);
 		goto err_supplies;
 	}
-	pr_info("DBRG: panel init cmds done\n");
 
 	drm_dsc_pps_payload_pack(&pps, &ctx->dsc);
 
@@ -299,14 +294,12 @@ static int g7a_37_02_0a_dsc_prepare(struct drm_panel *panel)
 		dev_err(panel->dev, "failed to transmit PPS: %d\n", ret);
 		goto err_supplies;
 	}
-	pr_info("DBRG: panel PPS sent\n");
 
 	ret = mipi_dsi_compression_mode(ctx->dsi, true);
 	if (ret < 0) {
 		dev_err(dev, "failed to enable compression mode: %d\n", ret);
 		goto err_supplies;
 	}
-	pr_info("DBRG: panel compression on\n");
 
 	msleep(28); /* TODO: Is this panel-dependent? */
 

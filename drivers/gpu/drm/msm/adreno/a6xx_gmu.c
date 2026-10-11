@@ -442,11 +442,12 @@ int a6xx_gmu_set_oob(struct a6xx_gmu *gmu, enum a6xx_gmu_oob_state state)
 		wait_for_completion(&a6xx_gpu->base.fault_coredump_done);
 	} while (true);
 
-	if (ret)
+	if (ret) {
 		DRM_DEV_ERROR(gmu->dev,
 			"Timeout waiting for GMU OOB set %s: 0x%x\n",
 				a6xx_gmu_oob_bits[state].name,
 				gmu_read(gmu, REG_A6XX_GMU_GMU2HOST_INTR_INFO));
+	}
 
 	/* Clear the acknowledge interrupt */
 	gmu_write(gmu, REG_A6XX_GMU_GMU2HOST_INTR_CLR, 1 << ack);
@@ -684,13 +685,25 @@ static void a6xx_gmu_rpmh_init(struct a6xx_gmu *gmu)
 	if (IS_ERR(pdcptr))
 		return;
 
-	if (adreno_is_a650_family(adreno_gpu) ||
+	/*
+	 * picasso/lito（A620, chipid 6.2.0.x）虽属 a650 家族，但 PDC 由内核
+	 * 编程（下游 adreno-gpulist.h 的 adreno_gpu_core_a620 无 pdc_in_aop，
+	 * 与 kona a650 的 true 相反）——按家族硬判会跳过 PDC 序列加载，
+	 * GMU/RSC 无法执行电源切换（实测 OOB 全超时、HFI 正常）。排除之。
+	 */
+	bool lito_a620 = (adreno_gpu->chip_id & 0xfffff000) == 0x06020000;
+
+	if ((adreno_is_a650_family(adreno_gpu) && !lito_a620) ||
 	    adreno_is_a7xx(adreno_gpu))
 		pdc_in_aop = true;
 	else if (adreno_is_a618(adreno_gpu) || adreno_is_a640_family(adreno_gpu))
 		pdc_address_offset = 0x30090;
 	else if (adreno_is_a619(adreno_gpu))
 		pdc_address_offset = 0x300a0;
+	else if (lito_a620)
+		/* xo.lvl 的 cmd-db 地址照下游动态获取（主线此处写死的是
+		 * kona 值；mx.lvl/cx.lvl 地址在 TCS 段同样动态化） */
+		pdc_address_offset = cmd_db_read_addr("xo.lvl") ?: 0x30080;
 	else
 		pdc_address_offset = 0x30080;
 
@@ -752,16 +765,39 @@ static void a6xx_gmu_rpmh_init(struct a6xx_gmu *gmu)
 	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD_ENABLE_BANK, 7);
 	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD_WAIT_FOR_CMPL_BANK, 0);
 	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CONTROL, 0);
-	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_MSGID, 0x10108);
-	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_ADDR, 0x30010);
-	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_DATA, 1);
-	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_MSGID + 4, 0x10108);
-	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_ADDR + 4, 0x30000);
-	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_DATA + 4, 0x0);
+	{
+		u32 mx_addr = lito_a620 ?
+			(cmd_db_read_addr("mx.lvl") ?: 0x30010) : 0x30010;
+		u32 cx_addr = lito_a620 ?
+			(cmd_db_read_addr("cx.lvl") ?: 0x30000) : 0x30000;
+
+		pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_MSGID, 0x10108);
+		pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_ADDR, mx_addr);
+		pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_DATA, 1);
+		pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_MSGID + 4, 0x10108);
+		pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_ADDR + 4, cx_addr);
+		pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_DATA + 4, 0x0);
+	}
 
 	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_MSGID + 8, 0x10108);
 	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_ADDR + 8, pdc_address_offset);
 	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_DATA + 8, 0x0);
+
+	/* 下游 lito 独有（adreno_is_a620 分支）：TCS1/TCS3 第 4 条命令写
+	 * vrm.soc+4（RPMh Voltage Regulator Manager 握手）。lito 的 GX 轨
+	 * 由 GDSC 硬件管理切换，VRM 不进对应模式时 rail 软件投票可上电
+	 * （GX_GDSC_POWER_OFF=0）但硬件管理的核心时钟起不来
+	 * （实测 GX_HM_CLK_OFF=1、GPU 寄存器全零） */
+	if (lito_a620) {
+		u32 vrm_addr = cmd_db_read_addr("vrm.soc");
+
+		if (vrm_addr) {
+			pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_MSGID + 12, 0x10108);
+			pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_ADDR + 12,
+				vrm_addr + 0x4);
+			pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS1_CMD0_DATA + 12, 0x0);
+		}
+	}
 
 	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS3_CMD_ENABLE_BANK, 7);
 	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS3_CMD_WAIT_FOR_CMPL_BANK, 0);
@@ -780,6 +816,18 @@ static void a6xx_gmu_rpmh_init(struct a6xx_gmu *gmu)
 	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS3_CMD0_MSGID + 8, 0x10108);
 	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS3_CMD0_ADDR + 8, pdc_address_offset);
 	pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS3_CMD0_DATA + 8, 0x3);
+
+	/* lito/a620：TCS3 的 vrm.soc+4 = 1（见上方 TCS1 处注释） */
+	if (lito_a620) {
+		u32 vrm_addr = cmd_db_read_addr("vrm.soc");
+
+		if (vrm_addr) {
+			pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS3_CMD0_MSGID + 12, 0x10108);
+			pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS3_CMD0_ADDR + 12,
+				vrm_addr + 0x4);
+			pdc_write(pdcptr, REG_A6XX_PDC_GPU_TCS3_CMD0_DATA + 12, 0x1);
+		}
+	}
 
 	/* Setup GPU PDC */
 setup_pdc:
@@ -1978,7 +2026,9 @@ static int a6xx_gmu_pwrlevels_probe(struct a6xx_gmu *gmu)
 			gmu->gpu_bw_table, ARRAY_SIZE(gmu->gpu_bw_table));
 
 	/* Build the list of RPMh votes that we'll send to the GMU */
-	return a6xx_gmu_rpmh_votes_init(gmu);
+	ret = a6xx_gmu_rpmh_votes_init(gmu);
+
+	return ret;
 }
 
 static int a6xx_gmu_acd_probe(struct a6xx_gmu *gmu)

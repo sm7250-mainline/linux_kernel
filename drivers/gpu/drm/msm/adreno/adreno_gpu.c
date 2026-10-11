@@ -7,6 +7,7 @@
  */
 
 #include <linux/ascii85.h>
+#include <linux/dma-mapping.h>
 #include <linux/interconnect.h>
 #include <linux/firmware/qcom/qcom_pas.h>
 #include <linux/firmware/qcom/qcom_scm.h>
@@ -105,6 +106,39 @@ static int zap_shader_load_mdt(struct msm_gpu *gpu, const char *fwname,
 	if (IS_ERR(fw)) {
 		DRM_DEV_ERROR(dev, "Unable to load %s\n", fwname);
 		return PTR_ERR(fw);
+	}
+
+	/* picasso/lito A620：zap 装载区必须 4K 对齐。下游 PIL 框架对
+	 * relocatable 镜像用 dma_alloc_attrs 动态分配（pil_alloc_region），
+	 * 从不使用 DT 固定区；主线把 pil-gpu-mem@8bc15400（0x400 未对齐）
+	 * 直传 TZ，PAS_MEM_SETUP 被拒（-EINVAL，实测）。照下游改走
+	 * 动态分配（span 按镜像程序头计算，本镜像 0x1000）。 */
+	if ((to_adreno_gpu(gpu)->chip_id & 0xfffff000) == 0x06020000) {
+		dma_addr_t zap_phys;
+		void *zap_mem = dmam_alloc_coherent(dev, SZ_4K, &zap_phys,
+						    GFP_KERNEL);
+		const char *loadname = (signed_fwname ||
+				to_adreno_gpu(gpu)->fwloc == FW_LOCATION_LEGACY) ?
+				fwname : kasprintf(GFP_KERNEL, "qcom/%s", fwname);
+
+		if (!zap_mem) {
+			release_firmware(fw);
+			return -ENOMEM;
+		}
+
+		ret = qcom_mdt_load(dev, fw, loadname, pasid,
+				zap_mem, zap_phys, SZ_4K, NULL);
+		if (!ret)
+			ret = qcom_pas_auth_and_reset(pasid);
+		if (ret == -EOPNOTSUPP)
+			zap_available = false;
+		else if (ret)
+			DRM_DEV_ERROR(dev, "Unable to authorize the image\n");
+
+		if (loadname != fwname)
+			kfree(loadname);
+		release_firmware(fw);
+		return ret;
 	}
 
 	/* Figure out how much memory we need */
