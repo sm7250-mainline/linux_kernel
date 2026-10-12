@@ -850,7 +850,8 @@
 			#size-cells = <0x02>;
 			iommus = <0x2c 0x23 0x00>;
 			ranges;
-			status = "disabled";
+			/* okay：触摸 SE7 (spi@984000) 所在 wrapper（其余 SE 保持 disabled） */
+			status = "okay";
 
 			i2c@980000 {
 				compatible = "qcom,geni-i2c";
@@ -901,11 +902,20 @@
 				clock-names = "se";
 				clocks = <0x2a 0x35>;
 				interrupts = <0x00 0x162 0x04>;
-				dmas = <0x34 0x00 0x01 0x01 0x34 0x01 0x01 0x01>;
-				dma-names = "tx", "rx";
+				pinctrl-names = "default", "sleep";
+				pinctrl-0 = <0x63>;
+				pinctrl-1 = <0x64>;
 				#address-cells = <0x01>;
 				#size-cells = <0x00>;
-				status = "disabled";
+				/* 无 dmas：PIO（FIFO）模式——触摸报文小，免去
+				   gpi_dma1+apps_smmu 链路变量（下游走 GPI，量大） */
+				status = "okay";
+
+				touch_spi@0 {
+					compatible = "xiaomi,spi-for-tp";
+					reg = <0x00>;
+					spi-max-frequency = <0x989680>;
+				};
 			};
 
 			i2c@988000 {
@@ -1005,6 +1015,50 @@
 				#address-cells = <0x01>;
 				#size-cells = <0x00>;
 				status = "disabled";
+			};
+		};
+
+		/* Novatek NT36672C 触摸（TDDI，经 spi@984000 的 xiaomi,spi-for-tp
+		 * 垫片传输；参数照 live dts 实测。lockdown 匹配数据实机取证：
+		 * 0x41,0x37,...,0x00 → cfg_0（fw01），固件走 IC flash 常驻 */
+		ts_novatek {
+			compatible = "novatek,NVT-ts-spi";
+			status = "okay";
+			spi-max-frequency = <0x4c4b40>;
+			reset-gpios = <0x3b 0x04 0x00>;
+			irq-gpios = <0x3b 0x05 0x00>;
+			pinctrl-names = "pmx_ts_active", "pmx_ts_suspend";
+			pinctrl-0 = <0x65 0x66 0x67>;
+			pinctrl-1 = <0x69 0x6a 0x68>;
+			novatek,swrst-n8-addr = <0x3f0fe>;
+			novatek,spi-rd-fast-addr = <0x3f310>;
+			novatek,config-array-size = <0x03>;
+
+			novatek,cfg_0 {
+				novatek,tp-vendor = <0x41>;
+				novatek,display-maker = <0x37>;
+				novatek,glass-vendor = <0x00>;
+				novatek,fw-name = "novatek_nt36672c_g7a_fw01.bin";
+				novatek,mp-name = "novatek_nt36672c_g7a_mp01.bin";
+				novatek,clicknum-file-name = "nvt+ebbg";
+			};
+
+			novatek,cfg_1 {
+				novatek,tp-vendor = <0x41>;
+				novatek,display-maker = <0x37>;
+				novatek,glass-vendor = <0x01>;
+				novatek,fw-name = "novatek_nt36672c_g7a_fw02.bin";
+				novatek,mp-name = "novatek_nt36672c_g7a_mp02.bin";
+				novatek,clicknum-file-name = "nvt+ebbg";
+			};
+
+			novatek,cfg_2 {
+				novatek,tp-vendor = <0x46>;
+				novatek,display-maker = <0x36>;
+				novatek,glass-vendor = <0x00>;
+				novatek,fw-name = "novatek_nt36672c_g7a_fw03.bin";
+				novatek,mp-name = "novatek_nt36672c_g7a_mp03.bin";
+				novatek,clicknum-file-name = "nvt+ebbg";
 			};
 		};
 
@@ -1110,6 +1164,73 @@
 				drive-strength = <0x02>;
 				bias-disable;
 				phandle = <0x32>;
+			};
+
+			/* 触摸 SE7 SPI（live dts qupv3_se7_spi、ts 系列组实测参数） */
+			qup-spi7-active {
+				pins = "gpio6", "gpio7", "gpio8";
+				function = "qup11";
+				drive-strength = <0x06>;
+				bias-disable;
+				phandle = <0x63>;
+			};
+
+			qup-spi7-sleep {
+				pins = "gpio6", "gpio7", "gpio8";
+				function = "gpio";
+				drive-strength = <0x06>;
+				bias-disable;
+				phandle = <0x64>;
+			};
+
+			ts-int-active {
+				pins = "gpio5";
+				function = "gpio";
+				drive-strength = <0x10>;
+				bias-pull-down;
+				phandle = <0x65>;
+			};
+
+			ts-reset-active {
+				pins = "gpio4";
+				function = "gpio";
+				drive-strength = <0x10>;
+				bias-pull-up;
+				phandle = <0x66>;
+			};
+
+			ts-cs-active {
+				pins = "gpio9";
+				function = "qup11";
+				drive-strength = <0x06>;
+				bias-disable;
+				phandle = <0x67>;
+			};
+
+			ts-cs-suspend {
+				pins = "gpio9";
+				function = "gpio";
+				drive-strength = <0x06>;
+				bias-pull-down;
+				output-low;
+				phandle = <0x68>;
+			};
+
+			ts-int-suspend {
+				pins = "gpio5";
+				function = "gpio";
+				drive-strength = <0x10>;
+				bias-disable;
+				input-enable;
+				phandle = <0x69>;
+			};
+
+			ts-reset-suspend {
+				pins = "gpio4";
+				function = "gpio";
+				drive-strength = <0x10>;
+				bias-disable;
+				phandle = <0x6a>;
 			};
 
 			sdc2-default {
