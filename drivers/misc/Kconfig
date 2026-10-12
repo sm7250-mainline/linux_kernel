@@ -568,14 +568,6 @@ config MCHP_LAN966X_PCI
 	    - lan966x-miim (MDIO_MSCC_MIIM)
 	    - lan966x-switch (LAN966X_SWITCH)
 
-config SPI_XIAOMI_TP
-	bool "Xiaomi spi-for-tp touchscreen SPI shim (picasso)"
-	depends on SPI
-	help
-	  Registers the "xiaomi,spi-for-tp" SPI device and hands the
-	  spi_device to the Novatek NT36672C touch driver. Ported from
-	  the Xiaomi picasso downstream kernel.
-
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"

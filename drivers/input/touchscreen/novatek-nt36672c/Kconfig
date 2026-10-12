@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# Novatek NT36672C touchscreen driver (自小米 picasso Android R 4.19 下游移植)
+#
+
+config TOUCHSCREEN_NT36672C
+	tristate "Novatek NT36672C touchscreen (Xiaomi picasso, SPI)"
+	depends on SPI && SPI_MASTER
+	help
+	  Say Y here to enable support for the Novatek NT36672C touchscreen
+	  as found on Xiaomi Redmi K30 5G (picasso / SM7250). The panel is a
+	  TDDI part speaking SPI (standard spi_driver, DT node on the SPI bus).
+
+	  This is a bring-up port of the Xiaomi downstream driver; suspend
+	  notifications are not wired (no fb notifier events in current
+	  kernels) and the panel lockdown info is fixed up from a captured
+	  device (see the header comment in nt36xxx.c).
+
+	  If unsure, say N.

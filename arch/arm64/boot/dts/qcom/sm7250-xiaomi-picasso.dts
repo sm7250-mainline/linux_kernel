@@ -911,10 +911,42 @@
 				   gpi_dma1+apps_smmu 链路变量（下游走 GPI，量大） */
 				status = "okay";
 
-				touch_spi@0 {
-					compatible = "xiaomi,spi-for-tp";
+				touchscreen@0 {
+					compatible = "novatek,nt36672c";
 					reg = <0x00>;
-					spi-max-frequency = <0x989680>;
+					spi-max-frequency = <0x4c4b40>;
+					reset-gpios = <0x3b 0x04 0x00>;
+					irq-gpios = <0x3b 0x05 0x00>;
+					pinctrl-names = "pmx_ts_active", "pmx_ts_suspend";
+					pinctrl-0 = <0x65 0x66 0x67>;
+					pinctrl-1 = <0x69 0x6a 0x68>;
+					novatek,swrst-n8-addr = <0x3f0fe>;
+					novatek,spi-rd-fast-addr = <0x3f310>;
+					novatek,config-array-size = <0x03>;
+
+					novatek,cfg_0 {
+						novatek,tp-vendor = <0x41>;
+						novatek,display-maker = <0x37>;
+						novatek,glass-vendor = <0x00>;
+						novatek,fw-name = "novatek_nt36672c_g7a_fw01.bin";
+						novatek,mp-name = "novatek_nt36672c_g7a_mp01.bin";
+					};
+
+					novatek,cfg_1 {
+						novatek,tp-vendor = <0x41>;
+						novatek,display-maker = <0x37>;
+						novatek,glass-vendor = <0x01>;
+						novatek,fw-name = "novatek_nt36672c_g7a_fw02.bin";
+						novatek,mp-name = "novatek_nt36672c_g7a_mp02.bin";
+					};
+
+					novatek,cfg_2 {
+						novatek,tp-vendor = <0x46>;
+						novatek,display-maker = <0x36>;
+						novatek,glass-vendor = <0x00>;
+						novatek,fw-name = "novatek_nt36672c_g7a_fw03.bin";
+						novatek,mp-name = "novatek_nt36672c_g7a_mp03.bin";
+					};
 				};
 			};
 
@@ -1018,49 +1050,6 @@
 			};
 		};
 
-		/* Novatek NT36672C 触摸（TDDI，经 spi@984000 的 xiaomi,spi-for-tp
-		 * 垫片传输；参数照 live dts 实测。lockdown 匹配数据实机取证：
-		 * 0x41,0x37,...,0x00 → cfg_0（fw01），固件走 IC flash 常驻 */
-		ts_novatek {
-			compatible = "novatek,NVT-ts-spi";
-			status = "okay";
-			spi-max-frequency = <0x4c4b40>;
-			reset-gpios = <0x3b 0x04 0x00>;
-			irq-gpios = <0x3b 0x05 0x00>;
-			pinctrl-names = "pmx_ts_active", "pmx_ts_suspend";
-			pinctrl-0 = <0x65 0x66 0x67>;
-			pinctrl-1 = <0x69 0x6a 0x68>;
-			novatek,swrst-n8-addr = <0x3f0fe>;
-			novatek,spi-rd-fast-addr = <0x3f310>;
-			novatek,config-array-size = <0x03>;
-
-			novatek,cfg_0 {
-				novatek,tp-vendor = <0x41>;
-				novatek,display-maker = <0x37>;
-				novatek,glass-vendor = <0x00>;
-				novatek,fw-name = "novatek_nt36672c_g7a_fw01.bin";
-				novatek,mp-name = "novatek_nt36672c_g7a_mp01.bin";
-				novatek,clicknum-file-name = "nvt+ebbg";
-			};
-
-			novatek,cfg_1 {
-				novatek,tp-vendor = <0x41>;
-				novatek,display-maker = <0x37>;
-				novatek,glass-vendor = <0x01>;
-				novatek,fw-name = "novatek_nt36672c_g7a_fw02.bin";
-				novatek,mp-name = "novatek_nt36672c_g7a_mp02.bin";
-				novatek,clicknum-file-name = "nvt+ebbg";
-			};
-
-			novatek,cfg_2 {
-				novatek,tp-vendor = <0x46>;
-				novatek,display-maker = <0x36>;
-				novatek,glass-vendor = <0x00>;
-				novatek,fw-name = "novatek_nt36672c_g7a_fw03.bin";
-				novatek,mp-name = "novatek_nt36672c_g7a_mp03.bin";
-				novatek,clicknum-file-name = "nvt+ebbg";
-			};
-		};
 
 		pinctrl@f000000 {
 			compatible = "qcom,sm7250-tlmm";
