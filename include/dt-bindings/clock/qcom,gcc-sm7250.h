@@ -101,6 +101,9 @@
 /* Camera/Video/Display AHB */
 #define GCC_CAMERA_AHB_CLK			100
 #define GCC_VIDEO_AHB_CLK			110
+/* 本树自有编号（下游 gcc-lito 为 108，与本项目时钟号空间冲突；
+   无 DT 直接引用，仅驱动内部接线） */
+#define GCC_UFS_PHY_PHY_AUX_CLK_SRC		111
 #define GCC_DISP_AHB_CLK			120
 #define GCC_DISP_HF_AXI_CLK			121
 #define GCC_DISP_SF_AXI_CLK			122

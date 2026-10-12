@@ -644,6 +644,105 @@ static const struct qmp_phy_init_tbl sm8150_ufsphy_hs_g4_pcs[] = {
 	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_BIST_FIXED_PAT_CTRL, 0x0a),
 };
 
+/*
+ * SM7250 (lito) is a v4-family PHY, but its TX and RX lane blocks place
+ * some registers at different offsets to other v4 targets: TRAN_DRVR_EMP_EN
+ * and the PWM divider registers moved, and the RX block lacks the
+ * RX_PWM_*_TIMEOUT registers (everything from RX_MODE_00_LOW sits 0x14
+ * lower).  Values and offsets come from the downstream
+ * phy-qcom-ufs-qmp-v4-lito driver.
+ */
+#define SM7250_TX_TRAN_DRVR_EMP_EN			0x0c0
+#define SM7250_TX_PWM_GEAR_1_DIVIDER_BAND0_1		0x168
+#define SM7250_TX_PWM_GEAR_2_DIVIDER_BAND0_1		0x16c
+#define SM7250_TX_PWM_GEAR_3_DIVIDER_BAND0_1		0x170
+#define SM7250_TX_PWM_GEAR_4_DIVIDER_BAND0_1		0x174
+#define SM7250_RX_MODE_00_LOW				0x15c
+#define SM7250_RX_MODE_00_HIGH				0x160
+#define SM7250_RX_MODE_00_HIGH2				0x164
+#define SM7250_RX_MODE_00_HIGH3				0x168
+#define SM7250_RX_MODE_00_HIGH4				0x16c
+#define SM7250_RX_MODE_01_LOW				0x170
+#define SM7250_RX_MODE_01_HIGH				0x174
+#define SM7250_RX_MODE_01_HIGH2				0x178
+#define SM7250_RX_MODE_01_HIGH3				0x17c
+#define SM7250_RX_MODE_01_HIGH4				0x180
+#define SM7250_RX_MODE_10_LOW				0x184
+#define SM7250_RX_MODE_10_HIGH				0x188
+#define SM7250_RX_MODE_10_HIGH2				0x18c
+#define SM7250_RX_MODE_10_HIGH3				0x190
+#define SM7250_RX_MODE_10_HIGH4				0x194
+#define SM7250_RX_DCC_CTRL1				0x1a8
+
+static const struct qmp_phy_init_tbl sm7250_ufsphy_tx[] = {
+	QMP_PHY_INIT_CFG(SM7250_TX_PWM_GEAR_1_DIVIDER_BAND0_1, 0x06),
+	QMP_PHY_INIT_CFG(SM7250_TX_PWM_GEAR_2_DIVIDER_BAND0_1, 0x03),
+	QMP_PHY_INIT_CFG(SM7250_TX_PWM_GEAR_3_DIVIDER_BAND0_1, 0x01),
+	QMP_PHY_INIT_CFG(SM7250_TX_PWM_GEAR_4_DIVIDER_BAND0_1, 0x00),
+	QMP_PHY_INIT_CFG(QSERDES_V4_TX_LANE_MODE_1, 0xf5),
+	QMP_PHY_INIT_CFG(QSERDES_V4_TX_LANE_MODE_3, 0x3f),
+	QMP_PHY_INIT_CFG(QSERDES_V4_TX_RES_CODE_LANE_OFFSET_TX, 0x06),
+	QMP_PHY_INIT_CFG(QSERDES_V4_TX_RES_CODE_LANE_OFFSET_RX, 0x09),
+	QMP_PHY_INIT_CFG(SM7250_TX_TRAN_DRVR_EMP_EN, 0x0c),
+};
+
+static const struct qmp_phy_init_tbl sm7250_ufsphy_rx[] = {
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_SIGDET_LVL, 0x24),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_SIGDET_CNTRL, 0x0f),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_SIGDET_DEGLITCH_CNTRL, 0x1e),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_RX_BAND, 0x18),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_UCDR_FASTLOCK_FO_GAIN, 0x0a),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_UCDR_SO_SATURATION_AND_ENABLE, 0x5a),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_UCDR_PI_CONTROLS, 0xf1),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_UCDR_FASTLOCK_COUNT_LOW, 0x80),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_UCDR_PI_CTRL2, 0x80),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_UCDR_FO_GAIN, 0x0c),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_UCDR_SO_GAIN, 0x04),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_RX_TERM_BW, 0x1b),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_RX_EQU_ADAPTOR_CNTRL2, 0x06),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_RX_EQU_ADAPTOR_CNTRL3, 0x04),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_RX_EQU_ADAPTOR_CNTRL4, 0x1d),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_RX_OFFSET_ADAPTOR_CNTRL2, 0x00),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_RX_IDAC_MEASURE_TIME, 0x10),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_RX_IDAC_TSETTLE_LOW, 0xc0),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_RX_IDAC_TSETTLE_HIGH, 0x00),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_00_LOW, 0x64),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_00_HIGH, 0x64),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_00_HIGH2, 0x24),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_00_HIGH3, 0x3f),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_00_HIGH4, 0x1f),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_01_LOW, 0xe0),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_01_HIGH, 0xc8),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_01_HIGH2, 0xc8),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_01_HIGH3, 0x3b),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_01_HIGH4, 0xb1),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_10_LOW, 0xe0),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_10_HIGH, 0xc8),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_10_HIGH2, 0xc8),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_10_HIGH3, 0x3b),
+	QMP_PHY_INIT_CFG(SM7250_RX_MODE_10_HIGH4, 0xb1),
+	QMP_PHY_INIT_CFG(QSERDES_V4_RX_VGA_CAL_CNTRL2, 0x04),
+	QMP_PHY_INIT_CFG(SM7250_RX_DCC_CTRL1, 0x0c),
+};
+
+static const struct qmp_phy_init_tbl sm7250_ufsphy_pcs[] = {
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_TIMER_20US_CORECLK_STEPS_MSB, 0x16),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_TIMER_20US_CORECLK_STEPS_LSB, 0xd8),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_PLL_CNTL, 0x03),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_TX_LARGE_AMP_DRV_LVL, 0x0a),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_TX_SMALL_AMP_DRV_LVL, 0x02),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_TX_HSGEAR_CAPABILITY, 0x03),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_RX_HSGEAR_CAPABILITY, 0x03),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_DEBUG_BUS_CLKSEL, 0x1f),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_RX_SIGDET_CTRL1, 0x0e),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_RX_MIN_HIBERN8_TIME, 0xff),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_RX_SIGDET_CTRL2, 0x6d),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_TX_PWM_GEAR_BAND, 0xaa),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_TX_HS_GEAR_BAND, 0x06),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_TX_MID_TERM_CTRL1, 0x43),
+	QMP_PHY_INIT_CFG(QPHY_V4_PCS_UFS_MULTI_LANE_CTRL1, 0x02),
+};
+
 static const struct qmp_phy_init_tbl sm8250_ufsphy_hs_g4_tx[] = {
 	QMP_PHY_INIT_CFG(QSERDES_V4_TX_LANE_MODE_1, 0xe5),
 };
@@ -1276,6 +1375,11 @@ static const struct regulator_bulk_data sm7150_ufsphy_vreg_l[] = {
 	{ .supply = "vdda-pll", .init_load_uA = 18300 },
 };
 
+static const struct regulator_bulk_data sm7250_ufsphy_vreg_l[] = {
+	{ .supply = "vdda-phy", .init_load_uA = 90192 },
+	{ .supply = "vdda-pll", .init_load_uA = 19000 },
+};
+
 static const struct regulator_bulk_data sm8150_ufsphy_vreg_l[] = {
 	{ .supply = "vdda-phy", .init_load_uA = 90200 },
 	{ .supply = "vdda-pll", .init_load_uA = 19000 },
@@ -1578,6 +1682,32 @@ static const struct qmp_phy_cfg sm7150_ufsphy_cfg = {
 	.regs			= ufsphy_v3_regs_layout,
 
 	.no_pcs_sw_reset	= true,
+};
+
+static const struct qmp_phy_cfg sm7250_ufsphy_cfg = {
+	.lanes			= 2,
+
+	.offsets		= &qmp_ufs_offsets,
+	.max_supported_gear	= UFS_HS_G3,
+
+	.tbls = {
+		.serdes		= sm8150_ufsphy_serdes,
+		.serdes_num	= ARRAY_SIZE(sm8150_ufsphy_serdes),
+		.tx		= sm7250_ufsphy_tx,
+		.tx_num		= ARRAY_SIZE(sm7250_ufsphy_tx),
+		.rx		= sm7250_ufsphy_rx,
+		.rx_num		= ARRAY_SIZE(sm7250_ufsphy_rx),
+		.pcs		= sm7250_ufsphy_pcs,
+		.pcs_num	= ARRAY_SIZE(sm7250_ufsphy_pcs),
+	},
+	.tbls_hs_b = {
+		.serdes		= sm8150_ufsphy_hs_b_serdes,
+		.serdes_num	= ARRAY_SIZE(sm8150_ufsphy_hs_b_serdes),
+	},
+
+	.vreg_list		= sm7250_ufsphy_vreg_l,
+	.num_vregs		= ARRAY_SIZE(sm7250_ufsphy_vreg_l),
+	.regs			= ufsphy_v4_regs_layout,
 };
 
 static const struct qmp_phy_cfg sm8150_ufsphy_cfg = {
@@ -2436,6 +2566,9 @@ static const struct of_device_id qmp_ufs_of_match_table[] = {
 	}, {
 		.compatible = "qcom,sm7150-qmp-ufs-phy",
 		.data = &sm7150_ufsphy_cfg,
+	}, {
+		.compatible = "qcom,sm7250-qmp-ufs-phy",
+		.data = &sm7250_ufsphy_cfg,
 	}, {
 		.compatible = "qcom,sm8150-qmp-ufs-phy",
 		.data = &sm8150_ufsphy_cfg,

@@ -8,6 +8,7 @@
 #include <linux/cleanup.h>
 #include <linux/delay.h>
 #include <linux/devfreq.h>
+#include <linux/dma-mapping.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interconnect.h>
 #include <linux/module.h>
@@ -584,6 +585,15 @@ static void ufs_qcom_enable_hw_clk_gating(struct ufs_hba *hba)
 out:
 	if (err)
 		dev_err(hba->dev, "hw clk gating enabled failed\n");
+}
+
+/* sm7250(lito) bring-up：CAP 的 64AS 位不实——UTRDL 落 4GB+（实测
+ * 0x100fa1000）后控制器描述符抓取静默失败（doorbell 锁存但无完成中断）。
+ * 强制 32 位使分配留在 4GB 内；Android 下游从未踩到（其分配不落 4GB+）。
+ */
+static int ufs_qcom_set_dma_mask(struct ufs_hba *hba)
+{
+	return dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(32));
 }
 
 static int ufs_qcom_hce_enable_notify(struct ufs_hba *hba,
@@ -1408,7 +1418,12 @@ static void ufs_qcom_set_caps(struct ufs_hba *hba)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 
-	hba->caps |= UFSHCD_CAP_CLK_GATING | UFSHCD_CAP_HIBERN8_WITH_CLK_GATING;
+	/*
+	 * sm7250(lito) bring-up：时钟门控（h8+关时钟）在唤醒路径上无法恢复
+	 * （实测 HW_H8_ENTER=2/EXIT=1 失步，空闲门控后所有命令 ocs=0xf，
+	 * LUN0 INQUIRY 挂死 offline）——bring-up 阶段禁用门控与相关 PM cap，
+	 * 链路/时钟常开；功耗阶段再修 ungating（疑似需 PHY 重校准）。
+	 */
 	hba->caps |= UFSHCD_CAP_CLK_SCALING | UFSHCD_CAP_WB_WITH_CLK_SCALING;
 	hba->caps |= UFSHCD_CAP_AUTO_BKOPS_SUSPEND;
 	hba->caps |= UFSHCD_CAP_WB_EN;
@@ -2921,6 +2936,7 @@ static const struct ufs_hba_variant_ops ufs_hba_qcom_vops = {
 	.init                   = ufs_qcom_init,
 	.exit                   = ufs_qcom_exit,
 	.get_ufs_hci_version	= ufs_qcom_get_ufs_hci_version,
+	.set_dma_mask		= ufs_qcom_set_dma_mask,
 	.clk_scale_notify	= ufs_qcom_clk_scale_notify,
 	.setup_clocks           = ufs_qcom_setup_clocks,
 	.hce_enable_notify      = ufs_qcom_hce_enable_notify,

@@ -1655,14 +1655,30 @@
 			reset-names = "rst";
 			clock-names = "core_clk", "bus_aggr_clk", "iface_clk", "core_clk_unipro", "ref_clk", "tx_lane0_sync_clk", "rx_lane0_sync_clk", "rx_lane1_sync_clk";
 			clocks = <0x2a 0x3c 0x2a 0x46 0x2a 0x3d 0x2a 0x3e 0x28 0x00 0x2a 0x41 0x2a 0x42 0x2a 0x43>;
-			iommus = <0x2c 0xe0 0x00>;
-			/* bring-up: 主线无 sm7250 QMP-UFS-phy 驱动，先禁用（phy 起不来 ufshc 永远 defer） */
-			status = "disabled";
-			reset-gpios = <0x3b 0x2e 0x01>;
+			/* freq-table-hz 必须与 clock-names 一一成对（live 实值，去 ICE 两对）：
+			   缺它 parse_clock_info 不建 clk_list——驱动全程不管时钟，
+			   set_core_clk_ctrl cycles=0 → "UNIPRO clk freq 0 MHz" +
+			   LINK_STARTUP 超时（迭代 29 首刷实锤） */
+			freq-table-hz = <50000000 200000000 0 0 0 0 37500000 150000000 0 0 0 0 0 0 0 0>;
+			/* 迭代 29 定案：ufshc 不接 apps_smmu——下游工厂 dtsi 与用户的
+			   live_dts.dts 均无 iommus（Android 即 SMMU 旁路跑 UFS）。
+			   实验证据：三种 sid 下零 SMMU fault（disable_bypass=y 时未匹配流
+			   必打 "Blocked unknown Stream ID"）= UFS 抓取事务根本不经
+			   apps_smmu；带 iommus 时 dmam_alloc_coherent 给出 IOVA，
+			   控制器取不到描述符 → dev cmd 永不完成。去掉 iommus 走
+			   dma-direct/物理地址，与 Android 同构 */
+			limit-hs-gear = <0x03>;
+			/* dev-ref-clk-freq=0（19.2MHz）照抄下游 lito.dtsi；
+			   reset-gpios 已删：MIUI dtb 的 <tlmm 46> 是错误映射——
+			   lito 的 UFS 设备复位是专用 ufs_reset pin（下游 pinctrl
+			   153/本树 146，偏移 0xbc000），gpio46 实为 qup13/qdss_cti
+               普通引脚（对照审计 2026-10-13） */
+			dev-ref-clk-freq = <0x00>;
+			status = "okay";
 			vcc-supply = <0x101>;
 			vccq2-supply = <0x41>;
-			vcc-max-microamp = "", "\f5";
-			vccq2-max-microamp = "", "\f5";
+			vcc-max-microamp = <800000>;
+			vccq2-max-microamp = <800000>;
 			phandle = <0x42>;
 		};
 
@@ -1674,7 +1690,9 @@
 			clocks = <0x28 0x00 0x2a 0x44 0x2a 0x45>;
 			resets = <0x42 0x00>;
 			reset-names = "ufsphy";
-			status = "disabled";
+			/* 迭代 29：qmp-ufs 驱动新增 sm7250 表（下游 v4-lito 值，
+			   TX/RX 尾部寄存器偏移 lito 专属） */
+			status = "okay";
 			vdda-phy-supply = <0x43>;
 			vdda-pll-supply = <0x44>;
 			vdda-phy-max-microamp = <0x16058>;

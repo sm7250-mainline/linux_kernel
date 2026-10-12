@@ -199,6 +199,11 @@ static const struct parent_map gcc_parent_map_5[] = {
 	{ P_GPLL0_OUT_EVEN, 6 },
 };
 
+/* 下游 gcc-lito：aux clk src 父仅有 bi_tcxo（另一为 PLL 测试调试口） */
+static const struct parent_map gcc_parent_map_xo[] = {
+	{ P_BI_TCXO, 0 },
+};
+
 /* ======== Parent Data ======== */
 static const struct clk_parent_data gcc_parent_data_0[] = {
 	{ .index = DT_BI_TCXO },
@@ -211,6 +216,10 @@ static const struct clk_parent_data gcc_parent_data_5[] = {
 	{ .hw = &gpll0.clkr.hw },
 	{ .hw = &gpll6.clkr.hw },
 	{ .hw = &gpll0_out_even.clkr.hw },
+};
+
+static const struct clk_parent_data gcc_parent_data_xo[] = {
+	{ .index = DT_BI_TCXO },
 };
 
 /* ======== Frequency Tables ======== */
@@ -511,6 +520,27 @@ static struct clk_rcg2 gcc_ufs_phy_axi_clk_src = {
 		.name = "gcc_ufs_phy_axi_clk_src",
 		.parent_data = gcc_parent_data_0,
 		.num_parents = ARRAY_SIZE(gcc_parent_data_0),
+		.ops = &clk_rcg2_ops,
+	},
+};
+
+/* 下游 gcc-lito：19.2MHz 固定、父仅 bi_tcxo（cmd_rcgr 0x770a0）。
+   迭代 29 审计补齐：此前 aux 分支无父，靠 ABL 残留态工作 */
+static const struct freq_tbl ftbl_gcc_ufs_phy_phy_aux_clk_src[] = {
+	F(19200000, P_BI_TCXO, 1, 0, 0),
+	{ }
+};
+
+static struct clk_rcg2 gcc_ufs_phy_phy_aux_clk_src = {
+	.cmd_rcgr = 0x770a0,
+	.mnd_width = 0,
+	.hid_width = 5,
+	.parent_map = gcc_parent_map_xo,
+	.freq_tbl = ftbl_gcc_ufs_phy_phy_aux_clk_src,
+	.clkr.hw.init = &(const struct clk_init_data) {
+		.name = "gcc_ufs_phy_phy_aux_clk_src",
+		.parent_data = gcc_parent_data_xo,
+		.num_parents = ARRAY_SIZE(gcc_parent_data_xo),
 		.ops = &clk_rcg2_ops,
 	},
 };
@@ -1036,6 +1066,11 @@ static struct clk_branch gcc_ufs_phy_phy_aux_clk = {
 		.enable_mask = BIT(0),
 		.hw.init = &(const struct clk_init_data) {
 			.name = "gcc_ufs_phy_phy_aux_clk",
+			.parent_hws = (const struct clk_hw*[]) {
+				&gcc_ufs_phy_phy_aux_clk_src.clkr.hw,
+			},
+			.num_parents = 1,
+			.flags = CLK_SET_RATE_PARENT,
 			.ops = &clk_branch2_ops,
 		},
 	},
@@ -1480,6 +1515,7 @@ static struct clk_regmap *gcc_sm7250_clocks[] = {
 	[GCC_UFS_PHY_RX_SYMBOL_1_CLK] = &gcc_ufs_phy_rx_symbol_1_clk.clkr,
 	[GCC_UFS_1X_CLKREF_CLK] = &gcc_ufs_1x_clkref_clk.clkr,
 	[GCC_UFS_PHY_PHY_AUX_CLK] = &gcc_ufs_phy_phy_aux_clk.clkr,
+	[GCC_UFS_PHY_PHY_AUX_CLK_SRC] = &gcc_ufs_phy_phy_aux_clk_src.clkr,
 	[GCC_AGGRE_UFS_PHY_AXI_CLK] = &gcc_aggre_ufs_phy_axi_clk.clkr,
 	[GCC_USB30_PRIM_MASTER_CLK] = &gcc_usb30_prim_master_clk.clkr,
 	[GCC_USB30_PRIM_MOCK_UTMI_CLK] = &gcc_usb30_prim_mock_utmi_clk.clkr,
