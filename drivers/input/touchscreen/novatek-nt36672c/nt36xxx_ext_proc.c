@@ -702,6 +702,10 @@ return:
 *******************************************************/
 void nvt_extra_proc_deinit(void)
 {
+	if (NVT_proc_xiaomi_lockdown_info_entry) {
+		proc_remove(NVT_proc_xiaomi_lockdown_info_entry);
+		NVT_proc_xiaomi_lockdown_info_entry = NULL;
+	}
 	if (NVT_proc_fw_version_entry != NULL) {
 		remove_proc_entry(NVT_FW_VERSION, NULL);
 		NVT_proc_fw_version_entry = NULL;

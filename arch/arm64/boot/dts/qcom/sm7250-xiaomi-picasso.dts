@@ -1222,6 +1222,29 @@
 				phandle = <0x6a>;
 			};
 
+			/* UFS 设备复位：TLMM 专用 ufs_reset 组（pin 146，非 gpio
+			 * 范围，gpiod 够不着）——ufs-qcom 走 pinctrl 两态
+			 * （迭代 32）。参数照 live_dts 实值（bias-pull-down +
+			 * drive 8 + output 电平），无 function（mux_bit=-1 的
+			 * 特殊组只走 config）。注：7.3 的 generic pinconf 把
+			 * output-high/low 解析为 PIN_CONFIG_LEVEL，pinctrl-msm
+			 * 原生支持该路径（io_reg 写电平）——无需框架改动 */
+			ufs-dev-reset-assert {
+				pins = "ufs_reset";
+				drive-strength = <0x08>;
+				bias-pull-down;
+				output-low;
+				phandle = <0x6f>;
+			};
+
+			ufs-dev-reset-deassert {
+				pins = "ufs_reset";
+				drive-strength = <0x08>;
+				bias-pull-down;
+				output-high;
+				phandle = <0x70>;
+			};
+
 			sdc2-default {
 				phandle = <0x45>;
 
@@ -1375,7 +1398,10 @@
 					regulator-name = "vreg_l5a_0p875";
 					regulator-min-microvolt = <0xd6d80>;
 					regulator-max-microvolt = <0xd6d80>;
-					regulator-initial-mode = <0x01>;
+					/* P41: UFS/DSI analog supply stays in HPM. */
+					regulator-initial-mode = <0x03>;
+					regulator-allow-set-load;
+					regulator-allowed-modes = <0x03>;
 					phandle = <0x43>;
 				};
 
@@ -1390,7 +1416,10 @@
 					regulator-name = "vreg_l9a_1p2";
 					regulator-min-microvolt = <0x124f80>;
 					regulator-max-microvolt = <0x124f80>;
-					regulator-initial-mode = <0x01>;
+					/* 19mA UFS load is below the 30mA HPM threshold. */
+					regulator-initial-mode = <0x03>;
+					regulator-allow-set-load;
+					regulator-allowed-modes = <0x03>;
 					phandle = <0x44>;
 				};
 
@@ -1439,7 +1468,10 @@
 					regulator-name = "vreg_l7c_2p95";
 					regulator-min-microvolt = <0x2d0370>;
 					regulator-max-microvolt = <0x2d2a80>;
-					regulator-initial-mode = <0x01>;
+					/* UFS VCC: enable load voting and keep HPM. */
+					regulator-initial-mode = <0x03>;
+					regulator-allow-set-load;
+					regulator-allowed-modes = <0x03>;
 					phandle = <0x101>;
 				};
 			};
@@ -1454,10 +1486,9 @@
 			reg = <0x00 0x1500000 0x00 0x28000>;
 			#interconnect-cells = <0x02>;
 			qcom,bcm-voters = <0x3d>;
-			/* bringup: qnoc-sm7250 表缺 6 个 BCM 地址(SN11/12/14/15,SH8/SH10)，
-			   sync_state 会带 addr=0/零带宽投票冲进 RPMh → 复位；无消费者先禁用，
-			   UFS/USB 阶段修好表再启用 */
-			status = "disabled";
+			/* 迭代 30: qnoc 幽灵 BCM(SN11/12/14/15,SH8/10)已裁表, 启用 */
+			status = "okay";
+			phandle = <0x6b>;
 		};
 
 		interconnect@1620000 {
@@ -1465,30 +1496,24 @@
 			reg = <0x00 0x1620000 0x00 0x19200>;
 			#interconnect-cells = <0x02>;
 			qcom,bcm-voters = <0x3d>;
-			/* bringup: qnoc-sm7250 表缺 6 个 BCM 地址(SN11/12/14/15,SH8/SH10)，
-			   sync_state 会带 addr=0/零带宽投票冲进 RPMh → 复位；无消费者先禁用，
-			   UFS/USB 阶段修好表再启用 */
-			status = "disabled";
+			/* 迭代 30: qnoc 幽灵 BCM(SN11/12/14/15,SH8/10)已裁表, 启用 */
+			status = "okay";
 		};
 
 		interconnect-ipa-virt {
 			compatible = "qcom,sm7250-ipa-virt";
 			#interconnect-cells = <0x02>;
 			qcom,bcm-voters = <0x3d>;
-			/* bringup: qnoc-sm7250 表缺 6 个 BCM 地址(SN11/12/14/15,SH8/SH10)，
-			   sync_state 会带 addr=0/零带宽投票冲进 RPMh → 复位；无消费者先禁用，
-			   UFS/USB 阶段修好表再启用 */
-			status = "disabled";
+			/* 迭代 30: qnoc 幽灵 BCM(SN11/12/14/15,SH8/10)已裁表, 启用 */
+			status = "okay";
 		};
 
 		interconnect-camnoc-virt {
 			compatible = "qcom,sm7250-camnoc-virt";
 			#interconnect-cells = <0x02>;
 			qcom,bcm-voters = <0x3d>;
-			/* bringup: qnoc-sm7250 表缺 6 个 BCM 地址(SN11/12/14/15,SH8/SH10)，
-			   sync_state 会带 addr=0/零带宽投票冲进 RPMh → 复位；无消费者先禁用，
-			   UFS/USB 阶段修好表再启用 */
-			status = "disabled";
+			/* 迭代 30: qnoc 幽灵 BCM(SN11/12/14/15,SH8/10)已裁表, 启用 */
+			status = "okay";
 		};
 
 		interconnect@16e0000 {
@@ -1496,10 +1521,9 @@
 			reg = <0x00 0x16e0000 0x00 0x15080>;
 			#interconnect-cells = <0x02>;
 			qcom,bcm-voters = <0x3d>;
-			/* bringup: qnoc-sm7250 表缺 6 个 BCM 地址(SN11/12/14/15,SH8/SH10)，
-			   sync_state 会带 addr=0/零带宽投票冲进 RPMh → 复位；无消费者先禁用，
-			   UFS/USB 阶段修好表再启用 */
-			status = "disabled";
+			/* 迭代 30: qnoc 幽灵 BCM(SN11/12/14/15,SH8/10)已裁表, 启用 */
+			status = "okay";
+			phandle = <0x6c>;
 		};
 
 		interconnect@1700000 {
@@ -1507,20 +1531,16 @@
 			reg = <0x00 0x1700000 0x00 0x23080>;
 			#interconnect-cells = <0x02>;
 			qcom,bcm-voters = <0x3d>;
-			/* bringup: qnoc-sm7250 表缺 6 个 BCM 地址(SN11/12/14/15,SH8/SH10)，
-			   sync_state 会带 addr=0/零带宽投票冲进 RPMh → 复位；无消费者先禁用，
-			   UFS/USB 阶段修好表再启用 */
-			status = "disabled";
+			/* 迭代 30: qnoc 幽灵 BCM(SN11/12/14/15,SH8/10)已裁表, 启用 */
+			status = "okay";
 		};
 
 		interconnect-compute-noc {
 			compatible = "qcom,sm7250-compute-noc";
 			#interconnect-cells = <0x02>;
 			qcom,bcm-voters = <0x3d>;
-			/* bringup: qnoc-sm7250 表缺 6 个 BCM 地址(SN11/12/14/15,SH8/SH10)，
-			   sync_state 会带 addr=0/零带宽投票冲进 RPMh → 复位；无消费者先禁用，
-			   UFS/USB 阶段修好表再启用 */
-			status = "disabled";
+			/* 迭代 30: qnoc 幽灵 BCM(SN11/12/14/15,SH8/10)已裁表, 启用 */
+			status = "okay";
 		};
 
 		interconnect@1740000 {
@@ -1528,10 +1548,8 @@
 			reg = <0x00 0x1740000 0x00 0x1c100>;
 			#interconnect-cells = <0x02>;
 			qcom,bcm-voters = <0x3d>;
-			/* bringup: qnoc-sm7250 表缺 6 个 BCM 地址(SN11/12/14/15,SH8/SH10)，
-			   sync_state 会带 addr=0/零带宽投票冲进 RPMh → 复位；无消费者先禁用，
-			   UFS/USB 阶段修好表再启用 */
-			status = "disabled";
+			/* 迭代 30: qnoc 幽灵 BCM(SN11/12/14/15,SH8/10)已裁表, 启用 */
+			status = "okay";
 		};
 
 		interconnect@9160000 {
@@ -1539,10 +1557,8 @@
 			reg = <0x00 0x9160000 0x00 0x3200>;
 			#interconnect-cells = <0x02>;
 			qcom,bcm-voters = <0x3d>;
-			/* bringup: qnoc-sm7250 表缺 6 个 BCM 地址(SN11/12/14/15,SH8/SH10)，
-			   sync_state 会带 addr=0/零带宽投票冲进 RPMh → 复位；无消费者先禁用，
-			   UFS/USB 阶段修好表再启用 */
-			status = "disabled";
+			/* 迭代 30: qnoc 幽灵 BCM(SN11/12/14/15,SH8/10)已裁表, 启用 */
+			status = "okay";
 		};
 
 		interconnect@9680000 {
@@ -1550,20 +1566,18 @@
 			reg = <0x00 0x9680000 0x00 0x3e200>;
 			#interconnect-cells = <0x02>;
 			qcom,bcm-voters = <0x3d>;
-			/* bringup: qnoc-sm7250 表缺 6 个 BCM 地址(SN11/12/14/15,SH8/SH10)，
-			   sync_state 会带 addr=0/零带宽投票冲进 RPMh → 复位；无消费者先禁用，
-			   UFS/USB 阶段修好表再启用 */
-			status = "disabled";
+			/* 迭代 30: qnoc 幽灵 BCM(SN11/12/14/15,SH8/10)已裁表, 启用 */
+			status = "okay";
+			phandle = <0x6d>;
 		};
 
 		interconnect-mc-virt {
 			compatible = "qcom,sm7250-mc-virt";
 			#interconnect-cells = <0x02>;
 			qcom,bcm-voters = <0x3d>;
-			/* bringup: qnoc-sm7250 表缺 6 个 BCM 地址(SN11/12/14/15,SH8/SH10)，
-			   sync_state 会带 addr=0/零带宽投票冲进 RPMh → 复位；无消费者先禁用，
-			   UFS/USB 阶段修好表再启用 */
-			status = "disabled";
+			/* 迭代 30: qnoc 幽灵 BCM(SN11/12/14/15,SH8/10)已裁表, 启用 */
+			status = "okay";
+			phandle = <0x6e>;
 		};
 
 		spmi@c440000 {
@@ -1653,13 +1667,21 @@
 			#reset-cells = <0x01>;
 			resets = <0x2a 0xc9>;
 			reset-names = "rst";
-			clock-names = "core_clk", "bus_aggr_clk", "iface_clk", "core_clk_unipro", "ref_clk", "tx_lane0_sync_clk", "rx_lane0_sync_clk", "rx_lane1_sync_clk";
-			clocks = <0x2a 0x3c 0x2a 0x46 0x2a 0x3d 0x2a 0x3e 0x28 0x00 0x2a 0x41 0x2a 0x42 0x2a 0x43>;
-			/* freq-table-hz 必须与 clock-names 一一成对（live 实值，去 ICE 两对）：
-			   缺它 parse_clock_info 不建 clk_list——驱动全程不管时钟，
-			   set_core_clk_ctrl cycles=0 → "UNIPRO clk freq 0 MHz" +
-			   LINK_STARTUP 超时（迭代 29 首刷实锤） */
-			freq-table-hz = <50000000 200000000 0 0 0 0 37500000 150000000 0 0 0 0 0 0 0 0>;
+			clock-names = "core_clk", "bus_aggr_clk", "iface_clk", "core_clk_unipro", "core_clk_ice", "core_clk_ice_hw_ctl", "ref_clk", "tx_lane0_sync_clk", "rx_lane0_sync_clk", "rx_lane1_sync_clk";
+			clocks = <0x2a 0x3c 0x2a 0x46 0x2a 0x3d 0x2a 0x3e 0x2a 0x3f 0x2a 0x40 0x28 0x00 0x2a 0x41 0x2a 0x42 0x2a 0x43>;
+			/* Match the live DTS clock order, including both ICE clocks.
+			 * A missing freq-table prevents ufshcd from acquiring clocks.
+			 * ICE needs its RCG to support 75/300MHz; ref/TX/RX entries
+			 * are enable-only. P38 confirmed that enabling ICE alone
+			 * does not resolve the READ timeout.
+			 */
+			freq-table-hz = <50000000 200000000 0 0 0 0 37500000 150000000 75000000 300000000 75000000 300000000 0 0 0 0 0 0 0 0>;
+			/* UFS 设备复位（迭代 32）：专用 ufs_reset 组两态（0x6f/0x70），
+			   ufs-qcom 在无 reset-gpios 时按名取用；不带 "default" 态
+			   → 内核不会在设备注册期自动应用 */
+			pinctrl-names = "dev-reset-assert", "dev-reset-deassert";
+			pinctrl-0 = <0x6f>;
+			pinctrl-1 = <0x70>;
 			/* 迭代 29 定案：ufshc 不接 apps_smmu——下游工厂 dtsi 与用户的
 			   live_dts.dts 均无 iommus（Android 即 SMMU 旁路跑 UFS）。
 			   实验证据：三种 sid 下零 SMMU fault（disable_bypass=y 时未匹配流
@@ -1668,6 +1690,13 @@
 			   控制器取不到描述符 → dev cmd 永不完成。去掉 iommus 走
 			   dma-direct/物理地址，与 Android 同构 */
 			limit-hs-gear = <0x03>;
+			/* 迭代 30: 带宽投票（上游 sm8250 同款两条路径）——下游 msm-bus
+			   22 档向量在主线的对应形态; phandle: 0x6c=a1noc 0x6e=mc_virt
+			   0x6d=gemnoc 0x6b=cnoc; ID: MASTER_UFS_MEM=6 SLAVE_EBI_CH0=1
+			   MASTER_AMPSS_M0=0 SLAVE_UFS_MEM_CFG=45（sm7250.h） */
+			interconnects = <0x6c 0x06 0x00  0x6e 0x01 0x00>,
+					<0x6d 0x00 0x00  0x6b 0x2d 0x00>;
+			interconnect-names = "ufs-ddr", "cpu-ufs";
 			/* dev-ref-clk-freq=0（19.2MHz）照抄下游 lito.dtsi；
 			   reset-gpios 已删：MIUI dtb 的 <tlmm 46> 是错误映射——
 			   lito 的 UFS 设备复位是专用 ufs_reset pin（下游 pinctrl
@@ -1686,8 +1715,12 @@
 			compatible = "qcom,sm7250-qmp-ufs-phy";
 			reg = <0x00 0x1d87000 0x00 0xe00>;
 			#phy-cells = <0x00>;
-			clock-names = "ref_clk_src", "ref_clk", "ref_aux_clk";
-			clocks = <0x28 0x00 0x2a 0x44 0x2a 0x45>;
+			/* RPMH_QLINK_CLK_A (26): qphy.lvl=1 while the PHY is powered.
+			 * This is an enable-only resource vote, not a reference rate.
+			 * Bulk clock teardown drops it last; the HBA still owns its GDSC.
+			 */
+			clock-names = "qphy", "ref", "ref_aux", "qref";
+			clocks = <0x28 0x1a 0x28 0x00 0x2a 0x45 0x2a 0x44>;
 			resets = <0x42 0x00>;
 			reset-names = "ufsphy";
 			/* 迭代 29：qmp-ufs 驱动新增 sm7250 表（下游 v4-lito 值，
@@ -1695,8 +1728,7 @@
 			status = "okay";
 			vdda-phy-supply = <0x43>;
 			vdda-pll-supply = <0x44>;
-			vdda-phy-max-microamp = <0x16058>;
-			vdda-pll-max-microamp = <0x4a38>;
+			/* Load votes (90192/19000uA) are in sm7250_ufsphy_vreg_l. */
 			phandle = <0x3f>;
 		};
 
@@ -1940,7 +1972,7 @@
 			compatible = "qcom,sm7250-smmu-500", "qcom,adreno-smmu", "qcom,smmu-500", "arm,mmu-500";
 			reg = <0x00 0x3da0000 0x00 0x10000>;
 			#iommu-cells = <0x02>;
-			#global-interrupts = <0x02>;
+			#global-interrupts = <0x01>;
 			interrupts = <0x00 0x2a1 0x04 0x00 0x2a6 0x04 0x00 0x2a7 0x04 0x00 0x2a8 0x04 0x00 0x2a9 0x04 0x00 0x2aa 0x04 0x00 0x2ab 0x04 0x00 0x2ac 0x04 0x00 0x2ad 0x04>;
 			phandle = <0x4b>;
 		};

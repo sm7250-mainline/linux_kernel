@@ -283,7 +283,7 @@ static const struct freq_tbl ftbl_gcc_usb30_prim_master_clk_src[] = {
 	F(66666667, P_GPLL0_OUT_EVEN, 4.5, 0, 0),
 	F(133333333, P_GPLL0_OUT_MAIN, 4.5, 0, 0),
 	F(200000000, P_GPLL0_OUT_EVEN, 1.5, 0, 0),
-	F(240000000, P_GPLL0_OUT_EVEN, 1.25, 0, 0),
+	F(240000000, P_GPLL0_OUT_MAIN, 2.5, 0, 0),
 	{ }
 };
 
@@ -967,6 +967,35 @@ static struct clk_branch gcc_ufs_phy_unipro_core_clk = {
 	},
 };
 
+/* picasso bring-up (迭代 38): UFS ICE 核心时钟源。上游 gcc-sm7250 只带
+ * 两个无父源的分支 (0x77064 bit0/1)——ufshc freq-table 给 ICE 频率时
+ * clk_set_rate 会 -EINVAL (probe 期 ufshcd_scale_clks 直接击穿)。
+ * 照下游 gcc-lito 同名源移植: cmd_rcgr=0x7706c, GPLL0(600M):
+ * EVEN/8=37.5M EVEN/4=75M MAIN/4=150M MAIN/2=300M; 分支接线仿
+ * gcc-sm6350 (parent_hws + CLK_SET_RATE_PARENT)。
+ * (下游另有 vdd_class/rate_max 的 cx 电压联投，主线无此机制，省略。) */
+static const struct freq_tbl ftbl_gcc_ufs_phy_ice_core_clk_src[] = {
+	F(37500000, P_GPLL0_OUT_EVEN, 8, 0, 0),
+	F(75000000, P_GPLL0_OUT_EVEN, 4, 0, 0),
+	F(150000000, P_GPLL0_OUT_MAIN, 4, 0, 0),
+	F(300000000, P_GPLL0_OUT_MAIN, 2, 0, 0),
+	{ }
+};
+
+static struct clk_rcg2 gcc_ufs_phy_ice_core_clk_src = {
+	.cmd_rcgr = 0x7706c,
+	.mnd_width = 0,
+	.hid_width = 5,
+	.parent_map = gcc_parent_map_0,
+	.freq_tbl = ftbl_gcc_ufs_phy_ice_core_clk_src,
+	.clkr.hw.init = &(const struct clk_init_data) {
+		.name = "gcc_ufs_phy_ice_core_clk_src",
+		.parent_data = gcc_parent_data_0,
+		.num_parents = ARRAY_SIZE(gcc_parent_data_0),
+		.ops = &clk_rcg2_ops,
+	},
+};
+
 static struct clk_branch gcc_ufs_phy_ice_core_clk = {
 	.halt_reg = 0x77064,
 	.halt_check = BRANCH_HALT,
@@ -977,6 +1006,11 @@ static struct clk_branch gcc_ufs_phy_ice_core_clk = {
 		.enable_mask = BIT(0),
 		.hw.init = &(const struct clk_init_data) {
 			.name = "gcc_ufs_phy_ice_core_clk",
+			.parent_hws = (const struct clk_hw*[]) {
+				&gcc_ufs_phy_ice_core_clk_src.clkr.hw,
+			},
+			.num_parents = 1,
+			.flags = CLK_SET_RATE_PARENT,
 			.ops = &clk_branch2_ops,
 		},
 	},
@@ -1508,6 +1542,7 @@ static struct clk_regmap *gcc_sm7250_clocks[] = {
 	[GCC_UFS_PHY_AHB_CLK] = &gcc_ufs_phy_ahb_clk.clkr,
 	[GCC_UFS_PHY_AXI_CLK] = &gcc_ufs_phy_axi_clk.clkr,
 	[GCC_UFS_PHY_UNIPRO_CORE_CLK] = &gcc_ufs_phy_unipro_core_clk.clkr,
+	[GCC_UFS_PHY_ICE_CORE_CLK_SRC] = &gcc_ufs_phy_ice_core_clk_src.clkr,
 	[GCC_UFS_PHY_ICE_CORE_CLK] = &gcc_ufs_phy_ice_core_clk.clkr,
 	[GCC_UFS_PHY_ICE_CORE_HW_CTL_CLK] = &gcc_ufs_phy_ice_core_hw_ctl_clk.clkr,
 	[GCC_UFS_PHY_TX_SYMBOL_0_CLK] = &gcc_ufs_phy_tx_symbol_0_clk.clkr,

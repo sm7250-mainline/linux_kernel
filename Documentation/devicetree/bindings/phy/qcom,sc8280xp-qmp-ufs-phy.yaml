@@ -52,6 +52,7 @@ properties:
           - qcom,sm6125-qmp-ufs-phy
           - qcom,sm6350-qmp-ufs-phy
           - qcom,sm7150-qmp-ufs-phy
+          - qcom,sm7250-qmp-ufs-phy
           - qcom,sm8150-qmp-ufs-phy
           - qcom,sm8250-qmp-ufs-phy
           - qcom,sm8350-qmp-ufs-phy
@@ -66,11 +67,11 @@ properties:
 
   clocks:
     minItems: 2
-    maxItems: 3
+    maxItems: 4
 
   clock-names:
     minItems: 2
-    maxItems: 3
+    maxItems: 4
 
   power-domains:
     maxItems: 1
@@ -104,6 +105,23 @@ required:
   - "#phy-cells"
 
 allOf:
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: qcom,sm7250-qmp-ufs-phy
+    then:
+      properties:
+        clocks:
+          minItems: 4
+          maxItems: 4
+        clock-names:
+          items:
+            - const: qphy
+            - const: ref
+            - const: ref_aux
+            - const: qref
+
   - if:
       properties:
         compatible:
@@ -164,6 +182,7 @@ allOf:
             enum:
               - qcom,msm8996-qmp-ufs-phy
               - qcom,msm8998-qmp-ufs-phy
+              - qcom,sm7250-qmp-ufs-phy
     then:
       properties:
         power-domains:

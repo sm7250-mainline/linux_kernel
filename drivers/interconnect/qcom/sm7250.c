@@ -1182,22 +1182,6 @@ static struct qcom_icc_bcm bcm_sn0 = {
 	.nodes = { &qns_gemnoc_sf },
 };
 
-static struct qcom_icc_bcm bcm_sh8 = {
-	.name = "SH8",
-	.keepalive = false,
-	.num_nodes = 1,
-	.nodes = { &qns_cdsp_gemnoc },
-};
-
-static struct qcom_icc_bcm bcm_sh10 = {
-	.name = "SH10",
-	.keepalive = false,
-	.num_nodes = 2,
-	.nodes = { &qnm_npu,
-		   &qnm_npu_dsp
-	},
-};
-
 static struct qcom_icc_bcm bcm_ce0 = {
 	.name = "CE0",
 	.keepalive = false,
@@ -1307,37 +1291,7 @@ static struct qcom_icc_bcm bcm_sn9 = {
 	},
 };
 
-static struct qcom_icc_bcm bcm_sn11 = {
-	.name = "SN11",
-	.keepalive = false,
-	.num_nodes = 2,
-	.nodes = { &qnm_aggre2_noc,
-		   &qns_a2noc_snoc
-	},
-};
-
-static struct qcom_icc_bcm bcm_sn12 = {
-	.name = "SN12",
-	.keepalive = false,
-	.num_nodes = 2,
-	.nodes = { &qxm_pimem,
-		   &xm_gic
-	},
-};
-
-static struct qcom_icc_bcm bcm_sn14 = {
-	.name = "SN14",
-	.keepalive = false,
-	.num_nodes = 1,
-	.nodes = { &qns_pcie_gemnoc },
-};
-
-static struct qcom_icc_bcm bcm_sn15 = {
-	.name = "SN15",
-	.keepalive = false,
-	.num_nodes = 1,
-	.nodes = { &qnm_gemnoc },
-};
+/* lito 裁剪: SN11/SN12/SN14/SN15 定义已删（cmd-db 无此资源） */
 
 static struct qcom_icc_bcm * const aggre1_noc_bcms[] = {
 	&bcm_cn0,
@@ -1364,11 +1318,11 @@ static const struct qcom_icc_desc sm7250_aggre1_noc = {
 	.num_bcms = ARRAY_SIZE(aggre1_noc_bcms),
 };
 
+/* lito 裁剪: SN11/SN14 不在本机 cmd-db（照抄 kona 的幻影资源,
+ * addr=0 投票会冲坏 RPMh——迭代 19 实测复位），从表中移除 */
 static struct qcom_icc_bcm * const aggre2_noc_bcms[] = {
 	&bcm_ce0,
 	&bcm_qup0,
-	&bcm_sn11,
-	&bcm_sn14,
 };
 
 static struct qcom_icc_node * const aggre2_noc_nodes[] = {
@@ -1412,9 +1366,8 @@ static const struct qcom_icc_desc sm7250_camnoc_virt = {
 	.num_bcms = ARRAY_SIZE(camnoc_virt_bcms),
 };
 
+/* lito 裁剪: SH8/SH10(=CDSP/NPU)不在本机 cmd-db, 见 aggre2 注释 */
 static struct qcom_icc_bcm * const compute_noc_bcms[] = {
-	&bcm_sh10,
-	&bcm_sh8,
 };
 
 static struct qcom_icc_node * const compute_noc_nodes[] = {
@@ -1607,12 +1560,11 @@ static const struct qcom_icc_desc sm7250_mmss_noc = {
 	.num_bcms = ARRAY_SIZE(mmss_noc_bcms),
 };
 
+/* lito 裁剪: SN11/SN12/SN15 不在本机 cmd-db, 见 aggre2 注释;
+ * 移除后经由这些节点的路径仍可建(图节点保留), 只是该跳无带宽投票 */
 static struct qcom_icc_bcm * const system_noc_bcms[] = {
 	&bcm_sn0,
 	&bcm_sn1,
-	&bcm_sn11,
-	&bcm_sn12,
-	&bcm_sn15,
 	&bcm_sn2,
 	&bcm_sn4,
 	&bcm_sn9,
@@ -1665,7 +1617,17 @@ static struct platform_driver qnoc_driver = {
 	.driver = {
 		.name = "qnoc-sm7250",
 		.of_match_table = qnoc_of_match,
-		.sync_state = icc_sync_state,
+		/*
+		 * picasso bring-up: 无 .sync_state（迭代 31）。
+		 * 当前 DT 里 qnoc 的唯一消费者是 ufshc；icc_sync_state 的全局
+		 * 屏障在第 11 个 provider 同步时把所有节点的 init(INT_MAX) 票
+		 * 清零，非 ufshc 路径的 BCM（MM2/MM3/QUP0/SH2/SH3/SH5/ACV/
+		 * CE0/SN1/SN2/SN4…，多数 keepalive=false）被 valid=0 显式禁用
+		 * → fabric 断供整机死机（迭代 30 实测 1.78s 死机重启）。
+		 * 保留 init 票恒为 INT_MAX = 与 cmdline 的 clk/pd/
+		 * regulator_ignore_unused 同族的第四个 bring-up 保活参数。
+		 * 将来显示/USB/CPU 等真实消费者接齐后恢复。
+		 */
 	},
 };
 

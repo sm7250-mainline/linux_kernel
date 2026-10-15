@@ -61,6 +61,10 @@ static int32_t nvt_get_fw_need_write_size(const struct firmware *fw_entry)
 	int32_t i = 0;
 	int32_t total_sectors_to_check = 0;
 
+	fw_need_write_size = 0;
+	if (fw_entry->size < FLASH_SECTOR_SIZE || fw_entry->size > U32_MAX)
+		return -EINVAL;
+
 	total_sectors_to_check = fw_entry->size / FLASH_SECTOR_SIZE;
 	/* printk("total_sectors_to_check = %d\n", total_sectors_to_check); */
 
@@ -133,7 +137,8 @@ static uint32_t CheckSum(const u8 *data, size_t len)
 
 static uint32_t byte_to_word(const uint8_t *data)
 {
-	return data[0] + (data[1] << 8) + (data[2] << 16) + (data[3] << 24);
+	return (u32)data[0] | ((u32)data[1] << 8) |
+	       ((u32)data[2] << 16) | ((u32)data[3] << 24);
 }
 
 /*******************************************************
@@ -143,142 +148,87 @@ Description:
 return:
 	n.a.
 *******************************************************/
-static uint32_t partition = 0;
-static uint8_t ilm_dlm_num = 2;
+static uint32_t partition;
+static const uint8_t ilm_dlm_num = 2;
+
+static bool nvt_fw_range_valid(size_t fwsize, size_t offset, size_t len)
+{
+	return offset <= fwsize && len <= fwsize - offset;
+}
+
+/* The partition size field is inclusive; zero marks an unused partition. */
+static bool nvt_fw_partition_valid(size_t fwsize, u32 offset, u32 size)
+{
+	return !size || (offset < fwsize && size < fwsize - offset);
+}
+
 static int32_t nvt_bin_header_parser(const u8 *fwdata, size_t fwsize)
 {
-	uint32_t list = 0;
-	uint32_t pos = 0x00;
-	uint32_t end = 0x00;
-	uint8_t info_sec_num = 0;
-	uint8_t ovly_sec_num = 0;
-	uint8_t ovly_info = 0;
+	u32 end, list, info_sec_num, ovly_sec_num;
+	size_t pos;
 
-	/* Find the header size */
-	end = fwdata[0] + (fwdata[1] << 8) + (fwdata[2] << 16) + (fwdata[3] << 24);
-	pos = 0x30;	// info section start at 0x30 offset
-	while (pos < end) {
-		info_sec_num ++;
-		pos += 0x10;	/* each header info is 16 bytes */
-	}
+	if (!nvt_fw_range_valid(fwsize, 0, 0x30))
+		return -EINVAL;
+	end = byte_to_word(fwdata);
+	if (end < 0x30 || end > fwsize || (end - 0x30) % 0x10)
+		return -EINVAL;
 
-	/*
-	 * Find the DLM OVLY section
-	 * [0:3] Overlay Section Number
-	 * [4]   Overlay Info
-	 */
-	ovly_info = (fwdata[0x28] & 0x10) >> 4;
-	ovly_sec_num = (ovly_info) ? (fwdata[0x28] & 0x0F) : 0;
-
-	/*
-	 * calculate all partition number
-	 * ilm_dlm_num (ILM & DLM) + ovly_sec_num + info_sec_num
-	 */
-	partition = ilm_dlm_num + ovly_sec_num + info_sec_num;
-	NVT_LOG("ovly_info = %d, ilm_dlm_num = %d, ovly_sec_num = %d, info_sec_num = %d, partition = %d\n",
-			ovly_info, ilm_dlm_num, ovly_sec_num, info_sec_num, partition);
-
-	/* allocated memory for header info */
-	bin_map = (struct nvt_ts_bin_map *)kzalloc((partition+1) * sizeof(struct nvt_ts_bin_map), GFP_KERNEL);
-	if(bin_map == NULL) {
-		NVT_ERR("kzalloc for bin_map failed!\n");
+	info_sec_num = (end - 0x30) / 0x10;
+	ovly_sec_num = (fwdata[0x28] & 0x10) ? fwdata[0x28] & 0x0f : 0;
+	/* The software-CRC response also has to fit the SPI receive buffer. */
+	if (info_sec_num > (sizeof(ts->rbuf) - 2) / 4 - ilm_dlm_num - ovly_sec_num)
+		return -EINVAL;
+	partition = ilm_dlm_num + info_sec_num + ovly_sec_num;
+	bin_map = kcalloc(partition, sizeof(*bin_map), GFP_KERNEL);
+	if (!bin_map)
 		return -ENOMEM;
-	}
 
 	for (list = 0; list < partition; list++) {
-		/*
-		 * [1] parsing ILM & DLM header info
-		 * BIN_addr : SRAM_addr : size (12-bytes)
-		 * crc located at 0x18 & 0x1C
-		 */
+		struct nvt_ts_bin_map *map = &bin_map[list];
+
 		if (list < ilm_dlm_num) {
-			bin_map[list].BIN_addr = byte_to_word(&fwdata[0 + list*12]);
-			bin_map[list].SRAM_addr = byte_to_word(&fwdata[4 + list*12]);
-			bin_map[list].size = byte_to_word(&fwdata[8 + list*12]);
-			if (ts->hw_crc)
-				bin_map[list].crc = byte_to_word(&fwdata[0x18 + list*4]);
-			else { //ts->hw_crc
-				if ((bin_map[list].BIN_addr + bin_map[list].size) < fwsize)
-					bin_map[list].crc = CheckSum(&fwdata[bin_map[list].BIN_addr], bin_map[list].size);
-				else {
-					NVT_ERR("access range (0x%08X to 0x%08X) is larger than bin size!\n",
-							bin_map[list].BIN_addr, bin_map[list].BIN_addr + bin_map[list].size);
-					return -EINVAL;
-				}
-			} //ts->hw_crc
-			if (list == 0)
-				sprintf(bin_map[list].name, "ILM");
-			else if (list == 1)
-				sprintf(bin_map[list].name, "DLM");
-		}
-
-		/*
-		 * [2] parsing others header info
-		 * SRAM_addr : size : BIN_addr : crc (16-bytes)
-		 */
-		if ((list >= ilm_dlm_num) && (list < (ilm_dlm_num + info_sec_num))) {
-			/* others partition located at 0x30 offset */
-			pos = 0x30 + (0x10 * (list - ilm_dlm_num));
-
-			bin_map[list].SRAM_addr = byte_to_word(&fwdata[pos]);
-			bin_map[list].size = byte_to_word(&fwdata[pos+4]);
-			bin_map[list].BIN_addr = byte_to_word(&fwdata[pos+8]);
-			if (ts->hw_crc)
-				bin_map[list].crc = byte_to_word(&fwdata[pos+12]);
-			else { //ts->hw_crc
-				if ((bin_map[list].BIN_addr + bin_map[list].size) < fwsize)
-					bin_map[list].crc = CheckSum(&fwdata[bin_map[list].BIN_addr], bin_map[list].size);
-				else {
-					NVT_ERR("access range (0x%08X to 0x%08X) is larger than bin size!\n",
-							bin_map[list].BIN_addr, bin_map[list].BIN_addr + bin_map[list].size);
-					return -EINVAL;
-				}
-			} //ts->hw_crc
-			/* detect header end to protect parser function */
-			if ((bin_map[list].BIN_addr == 0) && (bin_map[list].size != 0)) {
-				sprintf(bin_map[list].name, "Header");
+			pos = list * 12;
+			map->BIN_addr = byte_to_word(fwdata + pos);
+			map->SRAM_addr = byte_to_word(fwdata + pos + 4);
+			map->size = byte_to_word(fwdata + pos + 8);
+			map->crc = byte_to_word(fwdata + 0x18 + list * 4);
+			snprintf(map->name, sizeof(map->name), "%s", list ? "DLM" : "ILM");
+		} else {
+			if (list < ilm_dlm_num + info_sec_num) {
+				pos = 0x30 + 0x10 * (list - ilm_dlm_num);
+				snprintf(map->name, sizeof(map->name), "Info-%u",
+					 list - ilm_dlm_num);
 			} else {
-				sprintf(bin_map[list].name, "Info-%d", (list - ilm_dlm_num));
-			}
-		}
+				size_t relative = 0x10 * (list - ilm_dlm_num - info_sec_num);
 
-		/*
-		 * [3] parsing overlay section header info
-		 * SRAM_addr : size : BIN_addr : crc (16-bytes)
-		 */
-		if (list >= (ilm_dlm_num + info_sec_num)) {
-			/* overlay info located at DLM (list = 1) start addr */
-			pos = bin_map[1].BIN_addr + (0x10 * (list- ilm_dlm_num - info_sec_num));
-
-			bin_map[list].SRAM_addr = byte_to_word(&fwdata[pos]);
-			bin_map[list].size = byte_to_word(&fwdata[pos+4]);
-			bin_map[list].BIN_addr = byte_to_word(&fwdata[pos+8]);
-			if (ts->hw_crc)
-				bin_map[list].crc = byte_to_word(&fwdata[pos+12]);
-			else { //ts->hw_crc
-				if ((bin_map[list].BIN_addr + bin_map[list].size) < fwsize)
-					bin_map[list].crc = CheckSum(&fwdata[bin_map[list].BIN_addr], bin_map[list].size);
-				else {
-					NVT_ERR("access range (0x%08X to 0x%08X) is larger than bin size!\n",
-							bin_map[list].BIN_addr, bin_map[list].BIN_addr + bin_map[list].size);
+				if (!nvt_fw_range_valid(fwsize, bin_map[1].BIN_addr, relative))
 					return -EINVAL;
-				}
-			} //ts->hw_crc
-			sprintf(bin_map[list].name, "Overlay-%d", (list- ilm_dlm_num - info_sec_num));
+				pos = (size_t)bin_map[1].BIN_addr + relative;
+				/* An overlay header must also fit inside the DLM payload. */
+				if (!bin_map[1].size ||
+				    relative + 0x10 > (size_t)bin_map[1].size + 1)
+					return -EINVAL;
+				snprintf(map->name, sizeof(map->name), "Overlay-%u",
+					 list - ilm_dlm_num - info_sec_num);
+			}
+			if (!nvt_fw_range_valid(fwsize, pos, 0x10))
+				return -EINVAL;
+			map->SRAM_addr = byte_to_word(fwdata + pos);
+			map->size = byte_to_word(fwdata + pos + 4);
+			map->BIN_addr = byte_to_word(fwdata + pos + 8);
+			map->crc = byte_to_word(fwdata + pos + 12);
 		}
 
-		/* BIN size error detect */
-		if ((bin_map[list].BIN_addr + bin_map[list].size) > fwsize) {
-			NVT_ERR("access range (0x%08X to 0x%08X) is larger than bin size!\n",
-					bin_map[list].BIN_addr, bin_map[list].BIN_addr + bin_map[list].size);
+		if (!nvt_fw_partition_valid(fwsize, map->BIN_addr, map->size)) {
+			NVT_ERR("partition %u exceeds firmware size\n", list);
 			return -EINVAL;
 		}
-
-//		NVT_LOG("[%d][%s] SRAM (0x%08X), SIZE (0x%08X), BIN (0x%08X), CRC (0x%08X)\n",
-//				list, bin_map[list].name,
-//				bin_map[list].SRAM_addr, bin_map[list].size,  bin_map[list].BIN_addr, bin_map[list].crc);
+		if (!ts->hw_crc && map->size)
+			map->crc = CheckSum(fwdata + map->BIN_addr, map->size);
 	}
 
+	NVT_LOG("ilm_dlm_num=%u info_sec_num=%u ovly_sec_num=%u partition=%u\n",
+		ilm_dlm_num, info_sec_num, ovly_sec_num, partition);
 	return 0;
 }
 
@@ -305,6 +255,17 @@ Description:
 return:
 	Executive outcomes. 0---succeed. -1,-22---failed.
 *******************************************************/
+void nvt_fw_update_deinit(void)
+{
+	update_firmware_release();
+	kfree(bin_map);
+	bin_map = NULL;
+	kfree(fwbuf);
+	fwbuf = NULL;
+	partition = 0;
+	fw_need_write_size = 0;
+}
+
 static int32_t update_firmware_request(const char *filename)
 {
 	uint8_t retry = 0;
@@ -587,7 +548,7 @@ static int32_t nvt_write_firmware(const u8 *fwdata, size_t fwsize)
 //				list, name, SRAM_addr, size, BIN_addr);
 
 		/* Check data size */
-		if ((BIN_addr + size) > fwsize) {
+		if (!nvt_fw_partition_valid(fwsize, BIN_addr, size)) {
 			NVT_ERR("access range (0x%08X to 0x%08X) is larger than bin size!\n",
 					BIN_addr, BIN_addr + size);
 			ret = -EINVAL;
@@ -1118,6 +1079,9 @@ return:
 *******************************************************/
 void Boot_Update_Firmware(struct work_struct *work)
 {
+	if (READ_ONCE(ts->removing))
+		return;
+
 	nvt_match_fw();
 	mutex_lock(&ts->lock);
 	if (nvt_get_dbgfw_status()) {

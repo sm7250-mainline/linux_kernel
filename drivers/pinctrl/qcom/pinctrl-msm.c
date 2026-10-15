@@ -1053,6 +1053,16 @@ static void msm_gpio_irq_init_valid_mask(struct gpio_chip *gc,
 	}
 }
 
+static void msm_gpio_irq_soc_init_valid_mask(struct gpio_chip *gc,
+					    unsigned long *valid_mask,
+					    unsigned int ngpios)
+{
+	struct msm_pinctrl *pctrl = gpiochip_get_data(gc);
+
+	pctrl->soc->init_valid_mask(gc, valid_mask, ngpios);
+	msm_gpio_irq_init_valid_mask(gc, valid_mask, ngpios);
+}
+
 static int msm_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 {
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
@@ -1504,8 +1514,8 @@ static int msm_gpio_init(struct msm_pinctrl *pctrl)
 	if (pctrl->soc->no_get_direction)
 		chip->get_direction = NULL;
 
-	girq->init_valid_mask = pctrl->soc->init_valid_mask ?:
-				msm_gpio_irq_init_valid_mask;
+	girq->init_valid_mask = pctrl->soc->init_valid_mask ?
+		msm_gpio_irq_soc_init_valid_mask : msm_gpio_irq_init_valid_mask;
 	/* gpio 层的 valid_mask（gpiodev->valid_mask）：必须设 chip->init_valid_mask
 	 * 才会分配掩码（NULL 掩码 = 全部 valid）。gpiochip_add_data 的逐脚
 	 * get_direction 初始化用它挡无响应引脚槽。 */

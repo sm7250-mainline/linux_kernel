@@ -274,6 +274,7 @@ int dsi_clk_init_6g_v2(struct msm_dsi_host *msm_host)
 		ret = PTR_ERR(msm_host->byte_intf_clk);
 		pr_err("%s: can't find byte_intf clock. ret=%d\n",
 			__func__, ret);
+		return ret;
 	}
 
 	/*
@@ -284,9 +285,25 @@ int dsi_clk_init_6g_v2(struct msm_dsi_host *msm_host)
 	 * 启用显式 reparent；未提供的老 v2.4 平台行为不变）。
 	 */
 	msm_host->byte_src_clk = devm_clk_get_optional(&pdev->dev, "byte_src");
+	if (IS_ERR(msm_host->byte_src_clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(msm_host->byte_src_clk),
+				     "can't get byte_src clock\n");
 	msm_host->dsi_pll_byte_clk = devm_clk_get_optional(&pdev->dev, "dsi_pll_byte");
+	if (IS_ERR(msm_host->dsi_pll_byte_clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(msm_host->dsi_pll_byte_clk),
+				     "can't get dsi_pll_byte clock\n");
 	msm_host->pixel_src_clk = devm_clk_get_optional(&pdev->dev, "pixel_src");
+	if (IS_ERR(msm_host->pixel_src_clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(msm_host->pixel_src_clk),
+				     "can't get pixel_src clock\n");
 	msm_host->dsi_pll_pixel_clk = devm_clk_get_optional(&pdev->dev, "dsi_pll_pixel");
+	if (IS_ERR(msm_host->dsi_pll_pixel_clk))
+		return dev_err_probe(&pdev->dev, PTR_ERR(msm_host->dsi_pll_pixel_clk),
+				     "can't get dsi_pll_pixel clock\n");
+
+	if (!!msm_host->byte_src_clk != !!msm_host->dsi_pll_byte_clk ||
+	    !!msm_host->pixel_src_clk != !!msm_host->dsi_pll_pixel_clk)
+		return dev_err_probe(&pdev->dev, -EINVAL, "incomplete DSI clock pair\n");
 
 	return ret;
 }
@@ -407,15 +424,15 @@ int dsi_link_clk_set_rate_6g(struct msm_dsi_host *msm_host)
 	if (msm_host->byte_src_clk) {
 		ret = clk_set_parent(msm_host->byte_src_clk, msm_host->dsi_pll_byte_clk);
 		if (ret)
-			dev_err(&msm_host->pdev->dev,
-				"Failed to parent byte_src -> dsi_pll_byte: %d\n", ret);
+			return dev_err_probe(&msm_host->pdev->dev, ret,
+					     "failed to parent byte_src to dsi_pll_byte\n");
 	}
 
 	if (msm_host->pixel_src_clk) {
 		ret = clk_set_parent(msm_host->pixel_src_clk, msm_host->dsi_pll_pixel_clk);
 		if (ret)
-			dev_err(&msm_host->pdev->dev,
-				"Failed to parent pixel_src -> dsi_pll_pixel: %d\n", ret);
+			return dev_err_probe(&msm_host->pdev->dev, ret,
+					     "failed to parent pixel_src to dsi_pll_pixel\n");
 	}
 
 	rounded_byte_clk_rate = clk_round_rate(msm_host->byte_clk,

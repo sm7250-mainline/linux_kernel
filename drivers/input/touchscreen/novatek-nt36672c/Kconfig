@@ -5,7 +5,7 @@
 
 config TOUCHSCREEN_NT36672C
 	tristate "Novatek NT36672C touchscreen (Xiaomi picasso, SPI)"
-	depends on SPI && SPI_MASTER
+	depends on SPI && SPI_MASTER && OF
 	help
 	  Say Y here to enable support for the Novatek NT36672C touchscreen
 	  as found on Xiaomi Redmi K30 5G (picasso / SM7250). The panel is a

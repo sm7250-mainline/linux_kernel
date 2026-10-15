@@ -366,13 +366,6 @@ enum blk_eh_timer_return scsi_timeout(struct request *req)
 	struct scsi_cmnd *scmd = blk_mq_rq_to_pdu(req);
 	struct Scsi_Host *host = scmd->device->host;
 
-	/* TEMP-DEBUG(迭代29): UFS 首命令超时定位，问题定位后删除 */
-	pr_info("UFSDBG sto: op=0x%02x to=%ums now=%ums state=0x%lx host=%d id=%d lun=%llu\n",
-		scmd->cmnd[0], jiffies_to_msecs(req->timeout),
-		jiffies_to_msecs(jiffies - INITIAL_JIFFIES),
-		scmd->state, host->host_no, scmd->device->id,
-		scmd->device->lun);
-
 	trace_scsi_dispatch_cmd_timeout(scmd);
 	scsi_log_completion(scmd, TIMEOUT_ERROR);
 

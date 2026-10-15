@@ -325,6 +325,8 @@ struct ufs_qcom_testbus {
 };
 
 struct gpio_desc;
+struct pinctrl;
+struct pinctrl_state;
 
 struct ufs_qcom_host {
 	struct phy *generic_phy;
@@ -354,6 +356,19 @@ struct ufs_qcom_host {
 	struct reset_controller_dev rcdev;
 
 	struct gpio_desc *device_reset;
+	/* picasso bring-up (迭代 32): UFS 设备复位的 pinctrl 回退。
+	 * picasso 的复位脚是 TLMM 专用 ufs_reset 组（非 gpio 范围，
+	 * gpiod 够不着），照下游 4.19 ufshcd core 语义走两个状态：
+	 * "dev-reset-assert" / "dev-reset-deassert" */
+	struct pinctrl *dev_reset_pctrl;
+	struct pinctrl_state *dev_reset_assert;
+	struct pinctrl_state *dev_reset_deassert;
+	/* picasso bring-up (迭代 36)：链路首次训练成功前禁止设备复位
+	 * 脉冲——主线 ufshcd_init 会无条件先复位设备（在 hba_enable
+	 * 前），本机设备复位后固件启动远超该窗口（迭代 32~35 实测
+	 * link startup 连败；下游从不在 probe 期复位设备）。链路建立
+	 * 后（EH/恢复路径）脉冲不受影响。 */
+	bool link_started;
 
 	struct ufs_host_params host_params;
 	u32 phy_gear;

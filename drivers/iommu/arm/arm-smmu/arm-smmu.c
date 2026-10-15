@@ -1660,14 +1660,6 @@ static void arm_smmu_device_reset(struct arm_smmu_device *smmu)
 	int i;
 	u32 reg;
 
-	/* TEMP-DEBUG(迭代29): 复位前转储 bootloader 留下的 SMR 映射
-	   （XBL/ABL 用过的 sid 证据），问题定位后删除 */
-	for (i = 0; i < smmu->num_mapping_groups; i++) {
-		reg = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_SMR(i));
-		if (reg)
-			dev_info(smmu->dev, "SMMUDBG SMR[%d]=0x%08x\n", i, reg);
-	}
-
 	/* clear global FSR */
 	reg = arm_smmu_gr0_read(smmu, ARM_SMMU_GR0_sGFSR);
 	arm_smmu_gr0_write(smmu, ARM_SMMU_GR0_sGFSR, reg);

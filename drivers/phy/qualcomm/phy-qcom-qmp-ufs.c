@@ -1285,6 +1285,11 @@ struct qmp_phy_cfg {
 
 	/* true, if PCS block has no separate SW_RESET register */
 	bool no_pcs_sw_reset;
+	/* picasso bring-up（迭代 34）：PCS RX LineCfg 禁用寄存器偏移
+	 * （0 = 不支持）。下游 v4-lito 在 link startup 前经
+	 * ufs_qcom_phy_ctrl_rx_linecfg(phy, true) 清该寄存器 bit1
+	 * "确保 RX LineCfg 使能"——主线 qmp-ufs 无对应步骤，补齐。 */
+	u32 linecfg_disable_off;
 };
 
 struct qmp_ufs {
@@ -1704,6 +1709,10 @@ static const struct qmp_phy_cfg sm7250_ufsphy_cfg = {
 		.serdes		= sm8150_ufsphy_hs_b_serdes,
 		.serdes_num	= ARRAY_SIZE(sm8150_ufsphy_hs_b_serdes),
 	},
+
+	/* picasso bring-up（迭代 34 加；35 二分轮曾暂关，36 判明真凶为
+	 * init 期复位脉冲、本项无罪，恢复）*/
+	.linecfg_disable_off	= QPHY_V4_PCS_UFS_LINECFG_DISABLE,
 
 	.vreg_list		= sm7250_ufsphy_vreg_l,
 	.num_vregs		= ARRAY_SIZE(sm7250_ufsphy_vreg_l),
@@ -2247,6 +2256,21 @@ static int qmp_ufs_phy_calibrate(struct phy *phy)
 		return ret;
 	}
 
+	/*
+	 * picasso bring-up（迭代 34）：确保 RX LineCfg 使能（清 bit1）。
+	 * 照下游 v4-lito 的 ufs_qcom_phy_ctrl_rx_linecfg(phy, true)——
+	 * 原在 link startup PRE 执行（"make sure RX LineCfg is enabled
+	 * before link startup"）；此处在 PCS_READY 后、link startup 前，
+	 * 满足同一时序约束。幂等 RMW，对已使能硬件为空操作。
+	 */
+	if (cfg->linecfg_disable_off) {
+		val = readl(pcs + cfg->linecfg_disable_off);
+		val &= ~BIT(1);
+		writel(val, pcs + cfg->linecfg_disable_off);
+		/* make sure RX LineCfg config applied before we return */
+		readl(pcs + cfg->linecfg_disable_off);
+	}
+
 	return 0;
 }
 
@@ -2324,6 +2348,10 @@ static const struct phy_ops qcom_qmp_ufs_phy_ops = {
 static int qmp_ufs_clk_init(struct qmp_ufs *qmp)
 {
 	struct device *dev = qmp->dev;
+
+	if (qmp->cfg == &sm7250_ufsphy_cfg &&
+	    of_property_match_string(dev->of_node, "clock-names", "qphy") < 0)
+		return dev_err_probe(dev, -EINVAL, "missing qphy.lvl clock vote\n");
 
 	qmp->num_clks = devm_clk_bulk_get_all(dev, &qmp->clks);
 	if (qmp->num_clks < 0)

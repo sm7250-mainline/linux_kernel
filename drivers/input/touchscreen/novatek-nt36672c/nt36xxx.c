@@ -44,6 +44,7 @@
 #include <linux/uaccess.h>
 #include <linux/input/mt.h>
 #include <linux/debugfs.h>
+#include <linux/capability.h>
 
 #include <linux/notifier.h>
 #include <linux/fb.h>
@@ -84,13 +85,10 @@ static struct workqueue_struct *nvt_lockdown_wq;
 extern void Boot_Update_Firmware(struct work_struct *work);
 #endif
 
-static int32_t nvt_ts_suspend(struct device *dev);
+static int32_t __maybe_unused nvt_ts_suspend(struct device *dev);
 static int32_t nvt_ts_resume(struct device *dev);
 
-/*
- * 下游外部函数 stub（实机取证值固定 lockdown；实机系统本就无 TP 固件
- * 文件、IC flash fw 自启动，fw 更新失败不影响触摸功能）。
- */
+/* Captured board lockdown data selects the matching host-download firmware. */
 static int dsi_panel_lockdown_info_read_stub(unsigned char *p)
 {
 	static const u8 lockdown[NVT_LOCKDOWN_SIZE] = {
@@ -210,6 +208,9 @@ static void nvt_irq_enable(bool enable)
 {
 	struct irq_desc *desc;
 
+	if (!ts->irq_requested || (enable && READ_ONCE(ts->removing)))
+		return;
+
 	if (enable) {
 		if (!ts->irq_enabled) {
 			enable_irq(ts->client->irq);
@@ -223,7 +224,8 @@ static void nvt_irq_enable(bool enable)
 	}
 
 	desc = irq_to_desc(ts->client->irq);
-	NVT_LOG("enable=%d, desc->depth=%d\n", enable, desc->depth);
+	if (desc)
+		NVT_LOG("enable=%d, desc->depth=%d\n", enable, desc->depth);
 }
 
 /*******************************************************
@@ -239,6 +241,10 @@ static inline int32_t spi_read_write(struct spi_device *client, uint8_t *buf, si
 	struct spi_transfer t = {
 		.len    = len,
 	};
+
+	if (!buf || !len || len > NVT_TRANSFER_LEN + 1 ||
+	    (rw == NVTREAD && len + DUMMY_BYTES > sizeof(ts->rbuf)))
+		return -EINVAL;
 
 	memcpy(ts->xbuf, buf, len);
 
@@ -269,6 +275,9 @@ int32_t CTP_SPI_READ(struct spi_device *client, uint8_t *buf, uint16_t len)
 {
 	int32_t ret = -1;
 	int32_t retries = 0;
+
+	if (!buf || !len || len + DUMMY_BYTES > sizeof(ts->rbuf))
+		return -EINVAL;
 
 	mutex_lock(&ts->xbuf_lock);
 
@@ -303,6 +312,9 @@ int32_t CTP_SPI_WRITE(struct spi_device *client, uint8_t *buf, uint16_t len)
 {
 	int32_t ret = -1;
 	int32_t retries = 0;
+	if (!buf || !len || len > NVT_TRANSFER_LEN + 1)
+		return -EINVAL;
+
 	mutex_lock(&ts->xbuf_lock);
 	buf[0] = SPI_WRITE_MASK(buf[0]);
 	while (retries < 5) {
@@ -758,103 +770,54 @@ return:
 *******************************************************/
 static ssize_t nvt_flash_read(struct file *file, char __user *buff, size_t count, loff_t *offp)
 {
-	uint8_t *str = NULL;
-	int32_t ret = 0;
-	int32_t retries = 0;
-	int8_t spi_wr = 0;
-	uint8_t *buf;
+	u8 *str;
+	u16 len;
+	int ret, retries;
+	bool read;
 
-	if (count > NVT_TRANSFER_LEN) {
-		NVT_ERR("invalid transfer len!\n");
-		return -EFAULT;
-	}
+	if (!capable(CAP_SYS_RAWIO))
+		return -EPERM;
+	if (count < 3 || count > NVT_TRANSFER_LEN)
+		return -EINVAL;
 
-	/* allocate buffer for spi transfer */
-	str = (uint8_t *)kzalloc((count), GFP_KERNEL);
-	if(str == NULL) {
-		NVT_ERR("kzalloc for buf failed!\n");
-		ret = -ENOMEM;
-		goto kzalloc_failed;
-	}
+	str = memdup_user(buff, count);
+	if (IS_ERR(str))
+		return PTR_ERR(str);
 
-	buf = (uint8_t *)kzalloc((count), GFP_KERNEL | GFP_DMA);
-	if(buf == NULL) {
-		NVT_ERR("kzalloc for buf failed!\n");
-		ret = -ENOMEM;
-		kfree(str);
-		str = NULL;
-		goto kzalloc_failed;
-	}
-
-	if (copy_from_user(str, buff, count)) {
-		NVT_ERR("copy from user error\n");
-		ret = -EFAULT;
+	read = str[0] >> 7;
+	len = ((str[0] & 0x7f) << 8) | str[1];
+	if (!len || len > count - 2 ||
+	    (read && len + DUMMY_BYTES > sizeof(ts->rbuf))) {
+		ret = -EINVAL;
 		goto out;
 	}
 
 #if NVT_TOUCH_ESD_PROTECT
-	/*
-	 * stop esd check work to avoid case that 0x77 report righ after here to enable esd check again
-	 * finally lead to trigger esd recovery bootloader reset
-	 */
 	cancel_delayed_work_sync(&nvt_esd_check_work);
 	nvt_esd_check_enable(false);
-#endif /* #if NVT_TOUCH_ESD_PROTECT */
+#endif
 
-	spi_wr = str[0] >> 7;
-	memcpy(buf, str+2, ((str[0] & 0x7F) << 8) | str[1]);
-
-	if (spi_wr == NVTWRITE) {	//SPI write
-		while (retries < 20) {
-			ret = CTP_SPI_WRITE(ts->client, buf, ((str[0] & 0x7F) << 8) | str[1]);
-			if (!ret)
-				break;
-			else
-				NVT_ERR("error, retries=%d, ret=%d\n", retries, ret);
-
-			retries++;
-		}
-
-		if (unlikely(retries == 20)) {
-			NVT_ERR("error, ret = %d\n", ret);
-			ret = -EIO;
-			goto out;
-		}
-	} else if (spi_wr == NVTREAD) {	//SPI read
-		while (retries < 20) {
-			ret = CTP_SPI_READ(ts->client, buf, ((str[0] & 0x7F) << 8) | str[1]);
-			if (!ret)
-				break;
-			else
-				NVT_ERR("error, retries=%d, ret=%d\n", retries, ret);
-
-			retries++;
-		}
-
-		memcpy(str+2, buf, ((str[0] & 0x7F) << 8) | str[1]);
-		// copy buff to user if spi transfer
-		if (retries < 20) {
-			if (copy_to_user(buff, str, count)) {
-				ret = -EFAULT;
-				goto out;
-			}
-		}
-
-		if (unlikely(retries == 20)) {
-			NVT_ERR("error, ret = %d\n", ret);
-			ret = -EIO;
-			goto out;
-		}
-	} else {
-		NVT_ERR("Call error, str[0]=%d\n", str[0]);
-		ret = -EFAULT;
+	if (mutex_lock_interruptible(&ts->lock)) {
+		ret = -ERESTARTSYS;
 		goto out;
 	}
+	if (READ_ONCE(ts->removing)) {
+		ret = -ENODEV;
+		goto unlock;
+	}
 
+	for (retries = 0; retries < 20; retries++) {
+		ret = read ? CTP_SPI_READ(ts->client, str + 2, len) :
+			     CTP_SPI_WRITE(ts->client, str + 2, len);
+		if (!ret)
+			break;
+	}
+	if (!ret && read && copy_to_user(buff, str, count))
+		ret = -EFAULT;
+unlock:
+	mutex_unlock(&ts->lock);
 out:
 	kfree(str);
-	kfree(buf);
-kzalloc_failed:
 	return ret;
 }
 
@@ -913,7 +876,7 @@ return:
 *******************************************************/
 static int32_t nvt_flash_proc_init(void)
 {
-	NVT_proc_entry = proc_create(DEVICE_NAME, 0444, NULL,&nvt_flash_fops);
+	NVT_proc_entry = proc_create(DEVICE_NAME, 0600, NULL, &nvt_flash_fops);
 	if (NVT_proc_entry == NULL) {
 		NVT_ERR("Failed!\n");
 		return -ENOMEM;
@@ -1061,7 +1024,6 @@ Description:
 return:
 	n.a.
 *******************************************************/
-#ifdef CONFIG_OF
 static int32_t nvt_parse_dt(struct device *dev)
 {
 	struct nvt_config_info *config_info;
@@ -1109,6 +1071,10 @@ static int32_t nvt_parse_dt(struct device *dev)
 		NVT_LOG("config-array-size: %u\n", ts->config_array_size);
 	}
 
+	if (!ts->config_array_size ||
+	    ts->config_array_size != of_get_available_child_count(np))
+		return -EINVAL;
+
 	ret = of_property_read_u32(np, "spi-max-frequency", &ts->spi_max_freq);
 	if (ret) {
 		NVT_LOG("Unable to get spi freq\n");
@@ -1117,7 +1083,8 @@ static int32_t nvt_parse_dt(struct device *dev)
 		NVT_LOG("spi-max-frequency: %u\n", ts->spi_max_freq);
 	}
 
-	ts->config_array = devm_kzalloc(dev, ts->config_array_size * sizeof(struct nvt_config_info), GFP_KERNEL);
+	ts->config_array = devm_kcalloc(dev, ts->config_array_size,
+				       sizeof(*ts->config_array), GFP_KERNEL);
 	if (!ts->config_array) {
 		NVT_LOG("Unable to allocate memory\n");
 		return -ENOMEM;
@@ -1125,7 +1092,7 @@ static int32_t nvt_parse_dt(struct device *dev)
 
 
 	config_info = ts->config_array;
-	for_each_child_of_node(np, temp) {
+	for_each_available_child_of_node(np, temp) {
 		if (config_info - ts->config_array >= ts->config_array_size) {
 			NVT_ERR("parse %ld config down\n", config_info - ts->config_array);
 			break;
@@ -1157,16 +1124,18 @@ static int32_t nvt_parse_dt(struct device *dev)
 
 		ret = of_property_read_string(temp, "novatek,fw-name",
 						 &config_info->nvt_fw_name);
-		if (ret && (ret != -EINVAL)) {
-			NVT_LOG("Unable to read fw name\n");
+		if (ret) {
+			of_node_put(temp);
+			return ret;
 		} else {
 			NVT_LOG("fw_name: %s", config_info->nvt_fw_name);
 		}
 
 		ret = of_property_read_string(temp, "novatek,mp-name",
 						 &config_info->nvt_mp_name);
-		if (ret && (ret != -EINVAL)) {
-			NVT_LOG("Unable to read mp name\n");
+		if (ret) {
+			of_node_put(temp);
+			return ret;
 		} else {
 			NVT_LOG("mp_name: %s", config_info->nvt_mp_name);
 		}
@@ -1184,16 +1153,6 @@ static int32_t nvt_parse_dt(struct device *dev)
 	}
 	return ret;
 }
-#else
-static int32_t nvt_parse_dt(struct device *dev)
-{
-#if NVT_TOUCH_SUPPORT_HW_RST
-	ts->reset_gpio = NVTTOUCH_RST_PIN;
-#endif
-	ts->irq_gpio = NVTTOUCH_INT_PIN;
-	return 0;
-}
-#endif
 
 static int nvt_get_panel_type(struct nvt_ts_data *ts_data)
 {
@@ -1285,11 +1244,6 @@ Description:
 return:
 	n.a.
 *******************************************************/
-static void nvt_gpio_deconfig(struct nvt_ts_data *ts)
-{
-	/* devm_gpiod_get 自动释放，无需操作 */
-}
-
 void nvt_set_dbgfw_status(bool enable)
 {
 	ts->fw_debug = enable;
@@ -1352,7 +1306,8 @@ static void nvt_esd_check_func(struct work_struct *work)
 		esd_retry++;
 	}
 
-	queue_delayed_work(nvt_esd_check_wq, &nvt_esd_check_work,
+	if (!READ_ONCE(ts->removing))
+		queue_delayed_work(nvt_esd_check_wq, &nvt_esd_check_work,
 			msecs_to_jiffies(NVT_TOUCH_ESD_CHECK_PERIOD));
 }
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
@@ -2225,29 +2180,19 @@ static ssize_t tpdbg_read(struct file *file, char __user *buf, size_t size,
 				echo \"tp-suspend-en\" or \"tp-suspend-off\" to ctrl panel in or off suspend status\n \
 				echo \"fw-debug-on\" or \"fw-debug-off\" to on or off fw debug function\n";
 
-	loff_t pos = *ppos;
-	int len = strlen(str);
-
-	if (pos < 0)
-		return -EINVAL;
-	if (pos >= len)
-		return 0;
-
-	if (copy_to_user(buf, str, len))
-		return -EFAULT;
-
-	*ppos = pos + len;
-
-	return len;
+	return simple_read_from_buffer(buf, size, ppos, str, strlen(str));
 }
 
 static ssize_t tpdbg_write(struct file *file, const char __user *buf,
 			   size_t size, loff_t *ppos)
 {
 	struct nvt_ts_data *ts_core = file->private_data;
-	char *cmd = kzalloc(size + 1, GFP_KERNEL);
+	char *cmd;
 	int ret = size;
 
+	if (!size || size > 64)
+		return -EINVAL;
+	cmd = kzalloc(size + 1, GFP_KERNEL);
 	if (!cmd)
 		return -ENOMEM;
 
@@ -2296,6 +2241,9 @@ static ssize_t  nvt_touch_test_write(struct file *file, const char __user *buf,
 		size_t count, loff_t *pos){
 	int retval = -1;
 	uint8_t cmd[8];
+
+	if (!count || count > sizeof(cmd))
+		return -EINVAL;
 	if (copy_from_user(cmd, buf, count)) {
 		retval = -EFAULT;
 		goto out;
@@ -2321,14 +2269,16 @@ out:
 }
 
 static const struct file_operations nvt_touch_test_fops = {
-		rite = nvt_touch_test_write,
+	.owner = THIS_MODULE,
+	.write = nvt_touch_test_write,
 };
 
 static const struct file_operations tpdbg_ops = {
-		pen = tpdbg_open,
-	ead = tpdbg_read,
-	rite = tpdbg_write,
-	elease = tpdbg_release,
+	.owner = THIS_MODULE,
+	.open = tpdbg_open,
+	.read = tpdbg_read,
+	.write = tpdbg_write,
+	.release = tpdbg_release,
 };
 #endif
 /*
@@ -2346,6 +2296,9 @@ static void nvt_resume_work(struct work_struct *work)
 static void get_lockdown_info(struct work_struct *work)
 {
 	int ret = 0;
+
+	if (READ_ONCE(ts->removing))
+		return;
 
 	NVT_LOG("lkdown_readed = %d", ts->lkdown_readed);
 	if (!ts->lkdown_readed) {
@@ -2381,6 +2334,79 @@ return:
  * （spi@984000/touchscreen@0），probe 时机由设备模型/deferred probe
  * 管理，垫片与 late_initcall 全部移除。
  */
+/* Stop producers and drain every callback before freeing the singleton. */
+static void nvt_ts_stop(struct nvt_ts_data *data)
+{
+	if (READ_ONCE(data->removing))
+		return;
+	WRITE_ONCE(data->removing, true);
+
+#ifdef MI_DRM_NOTIFIER
+	if (data->notifier_registered)
+		mi_drm_unregister_client(&data->drm_notif);
+#endif
+#if defined(CONFIG_HAS_EARLYSUSPEND)
+	if (data->early_suspend_registered)
+		unregister_early_suspend(&data->early_suspend);
+#endif
+	if (data->panel_info_created) {
+		sysfs_remove_group(&data->client->dev.kobj, data->attrs);
+		data->panel_info_created = false;
+	}
+#ifdef CONFIG_TOUCHSCREEN_NVT_DEBUG_FS
+	if (!IS_ERR_OR_NULL(data->debugfs))
+		debugfs_remove_recursive(data->debugfs);
+#endif
+#if NVT_TOUCH_EXT_PROC
+	nvt_extra_proc_deinit();
+#endif
+#if NVT_TOUCH_PROC
+	nvt_flash_proc_deinit();
+#endif
+	if (data->irq_requested) {
+		nvt_irq_enable(false);
+		free_irq(data->client->irq, data);
+		data->irq_requested = false;
+	}
+	/* These callbacks can submit each other; block requeue before draining. */
+	timer_shutdown_sync(&data->rf_timer);
+	cancel_work_sync(&data->switch_mode_work);
+	cancel_work_sync(&data->resist_rf_work);
+	cancel_work_sync(&data->resume_work);
+	if (data->event_wq) {
+		destroy_workqueue(data->event_wq);
+		data->event_wq = NULL;
+	}
+#if BOOT_UPDATE_FIRMWARE
+	cancel_delayed_work_sync(&data->nvt_fwu_work);
+	if (nvt_fwu_wq) {
+		destroy_workqueue(nvt_fwu_wq);
+		nvt_fwu_wq = NULL;
+	}
+#endif
+	cancel_delayed_work_sync(&data->nvt_lockdown_work);
+	if (nvt_lockdown_wq) {
+		destroy_workqueue(nvt_lockdown_wq);
+		nvt_lockdown_wq = NULL;
+	}
+#if NVT_TOUCH_ESD_PROTECT
+	cancel_delayed_work_sync(&nvt_esd_check_work);
+	if (nvt_esd_check_wq) {
+		destroy_workqueue(nvt_esd_check_wq);
+		nvt_esd_check_wq = NULL;
+	}
+	nvt_esd_check_enable(false);
+#endif
+#if BOOT_UPDATE_FIRMWARE
+	nvt_fw_update_deinit();
+#endif
+#if WAKEUP_GESTURE
+	if (data->input_registered)
+		device_init_wakeup(&data->input_dev->dev, 0);
+#endif
+	bTouchIsAwake = 0;
+}
+
 static int nvt_ts_probe(struct spi_device *client)
 {
 	int32_t ret = 0;
@@ -2391,37 +2417,50 @@ static int nvt_ts_probe(struct spi_device *client)
 
 	NVT_LOG("start\n");
 
+	if (ts)
+		return -EBUSY;
+
 	ts = kzalloc(sizeof(struct nvt_ts_data), GFP_KERNEL);
 	if (ts == NULL) {
 		NVT_ERR("failed to allocated memory for nvt ts data\n");
 		return -ENOMEM;
 	}
-	ts->xbuf = (uint8_t *)kzalloc((NVT_TRANSFER_LEN+1), GFP_KERNEL);
-	if(ts->xbuf == NULL) {
-		NVT_ERR("kzalloc for xbuf failed!\n");
-		if (ts) {
-			kfree(ts);
-			ts = NULL;
-		}
-		return -ENOMEM;
+	ts->client = client;
+	spi_set_drvdata(client, ts);
+	mutex_init(&ts->lock);
+	mutex_init(&ts->xbuf_lock);
+	INIT_WORK(&ts->switch_mode_work, nvt_switch_mode_work);
+	INIT_WORK(&ts->resist_rf_work, nvt_rf_resist_enable);
+	INIT_WORK(&ts->resume_work, nvt_resume_work);
+	timer_setup(&ts->rf_timer, nvt_rf_timer_timeout, 0);
+	INIT_DELAYED_WORK(&ts->nvt_lockdown_work, get_lockdown_info);
+#if BOOT_UPDATE_FIRMWARE
+	INIT_DELAYED_WORK(&ts->nvt_fwu_work, Boot_Update_Firmware);
+#endif
+#if NVT_TOUCH_ESD_PROTECT
+	INIT_DELAYED_WORK(&nvt_esd_check_work, nvt_esd_check_func);
+#endif
+	init_completion(&ts->dev_pm_suspend_completion);
+
+	ts->xbuf = kzalloc(NVT_TRANSFER_LEN + 1, GFP_KERNEL);
+	if (!ts->xbuf) {
+		ret = -ENOMEM;
+		goto err_cleanup;
 	}
 
 	//---parse dts---
 	ret = nvt_parse_dt(&client->dev);
 	if (ret) {
 		NVT_ERR("parse dt error\n");
-		goto err_spi_setup;
+		goto err_cleanup;
 	}
 
-
-	ts->client = client;
-	spi_set_drvdata(ts->client, ts);
 
 	//---prepare for spi parameter---
 	if (ts->client->controller->flags & SPI_CONTROLLER_HALF_DUPLEX) {
 		NVT_ERR("Full duplex not supported by controller\n");
 		ret = -EIO;
-		goto err_ckeck_full_duplex;
+		goto err_cleanup;
 	}
 	ts->client->bits_per_word = 8;
 	ts->client->mode = SPI_MODE_0;
@@ -2431,7 +2470,7 @@ static int nvt_ts_probe(struct spi_device *client)
 	ret = spi_setup(ts->client);
 	if (ret < 0) {
 		NVT_ERR("Failed to perform SPI setup\n");
-		goto err_spi_setup;
+		goto err_cleanup;
 	}
 
 #ifdef CONFIG_MTK_SPI
@@ -2449,15 +2488,12 @@ static int nvt_ts_probe(struct spi_device *client)
 	NVT_LOG("mode=%d, max_speed_hz=%d\n", ts->client->mode, ts->client->max_speed_hz);
 
 	ret = nvt_pinctrl_init(ts);
-	if (!ret && ts->ts_pinctrl) {
-		ret = pinctrl_select_state(ts->ts_pinctrl, ts->pinctrl_state_active);
-
-		if (ret < 0) {
-			NVT_ERR("Failed to select %s pinstate %d\n",
-				PINCTRL_STATE_ACTIVE, ret);
-		}
-	} else {
-		NVT_ERR("Failed to init pinctrl\n");
+	if (ret)
+		goto err_cleanup;
+	ret = pinctrl_select_state(ts->ts_pinctrl, ts->pinctrl_state_active);
+	if (ret) {
+		NVT_ERR("Failed to select active pinstate: %d\n", ret);
+		goto err_cleanup;
 	}
 
 	NVT_LOG("Request GPIO\n");
@@ -2465,11 +2501,8 @@ static int nvt_ts_probe(struct spi_device *client)
 	ret = nvt_gpio_config(ts);
 	if (ret) {
 		NVT_ERR("gpio config error!\n");
-		goto err_gpio_config_failed;
+		goto err_cleanup;
 	}
-
-	mutex_init(&ts->lock);
-	mutex_init(&ts->xbuf_lock);
 
 	//---eng reset before TP_RESX high
 
@@ -2487,7 +2520,7 @@ static int nvt_ts_probe(struct spi_device *client)
 	if (ret) {
 		NVT_ERR("chip is not identified\n");
 		ret = -EINVAL;
-		goto err_chipvertrim_failed;
+		goto err_cleanup;
 	}
 	NVT_LOG("finish check chip\n");
 
@@ -2498,7 +2531,7 @@ static int nvt_ts_probe(struct spi_device *client)
 	if (ts->input_dev == NULL) {
 		NVT_ERR("allocate input device failed\n");
 		ret = -ENOMEM;
-		goto err_input_dev_alloc_failed;
+		goto err_cleanup;
 	}
 
 	ts->max_touch_num = TOUCH_MAX_FINGER_NUM;
@@ -2517,7 +2550,9 @@ static int nvt_ts_probe(struct spi_device *client)
 	ts->input_dev->propbit[0] = BIT(INPUT_PROP_DIRECT);
 
 #if MT_PROTOCOL_B
-	input_mt_init_slots(ts->input_dev, ts->max_touch_num, 0);
+	ret = input_mt_init_slots(ts->input_dev, ts->max_touch_num, 0);
+	if (ret)
+		goto err_cleanup;
 #endif
 
 #if TOUCH_MAX_FINGER_NUM > 1
@@ -2552,37 +2587,37 @@ static int nvt_ts_probe(struct spi_device *client)
 	ret = input_register_device(ts->input_dev);
 	if (ret) {
 		NVT_ERR("register input device (%s) failed. ret=%d\n", ts->input_dev->name, ret);
-		goto err_input_register_device_failed;
+		goto err_cleanup;
 	}
 
-	//---set int-pin & request irq---
-	ts->client->irq = gpiod_to_irq(ts->irq_gpio);
-	if (ts->client->irq) {
-		NVT_LOG("int_trigger_type=%d\n", ts->int_trigger_type);
-		ts->irq_enabled = true;
-		ret = request_threaded_irq(ts->client->irq, NULL, nvt_ts_work_func,
-				ts->int_trigger_type | IRQF_ONESHOT, NVT_SPI_NAME, ts);
-		if (ret != 0) {
-			NVT_ERR("request irq failed. ret=%d\n", ret);
-			goto err_int_request_failed;
-		} else {
-			nvt_irq_enable(false);
-			NVT_LOG("request irq %d succeed\n", ts->client->irq);
-		}
-	}
+	ts->input_registered = true;
 
-	INIT_WORK(&ts->switch_mode_work, nvt_switch_mode_work);
-	INIT_WORK(&ts->resist_rf_work, nvt_rf_resist_enable);
-	timer_setup(&ts->rf_timer, nvt_rf_timer_timeout, 0);
+	ret = gpiod_to_irq(ts->irq_gpio);
+	if (ret < 0)
+		goto err_cleanup;
+	if (!ret) {
+		ret = -EINVAL;
+		goto err_cleanup;
+	}
+	ts->client->irq = ret;
+	ret = request_threaded_irq(ts->client->irq, NULL, nvt_ts_work_func,
+			ts->int_trigger_type | IRQF_ONESHOT | IRQF_NO_AUTOEN,
+			NVT_SPI_NAME, ts);
+	if (ret) {
+		NVT_ERR("request irq failed: %d\n", ret);
+		goto err_cleanup;
+	}
+	ts->irq_requested = true;
+	NVT_LOG("request irq %d succeed\n", ts->client->irq);
+
 	ts->rf_resist_cmd_waiting = false;
 
 	nvt_lockdown_wq = alloc_workqueue("nvt_lockdown_wq", WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
 	if (!nvt_lockdown_wq) {
 		NVT_ERR("nvt_fwu_wq create workqueue failed\n");
 		ret = -ENOMEM;
-		goto err_create_nvt_lockdown_wq_failed;
+		goto err_cleanup;
 	}
-	INIT_DELAYED_WORK(&ts->nvt_lockdown_work, get_lockdown_info);
 	// please make sure boot update start after display reset(RESX) sequence
 	queue_delayed_work(nvt_lockdown_wq, &ts->nvt_lockdown_work, msecs_to_jiffies(5000));
 
@@ -2592,30 +2627,28 @@ static int nvt_ts_probe(struct spi_device *client)
 	ts->ic_state = NVT_IC_INIT;
 	ts->dev_pm_suspend = false;
 	ts->gesture_command_delayed = -1;
-	init_completion(&ts->dev_pm_suspend_completion);
 
 #if BOOT_UPDATE_FIRMWARE
 	nvt_fwu_wq = alloc_workqueue("nvt_fwu_wq", WQ_UNBOUND | WQ_MEM_RECLAIM, 1);
 	if (!nvt_fwu_wq) {
 		NVT_ERR("nvt_fwu_wq create workqueue failed\n");
 		ret = -ENOMEM;
-		goto err_create_nvt_fwu_wq_failed;
+		goto err_cleanup;
 	}
-	INIT_DELAYED_WORK(&ts->nvt_fwu_work, Boot_Update_Firmware);
 	// please make sure boot update start after display reset(RESX) sequence
 	queue_delayed_work(nvt_fwu_wq, &ts->nvt_fwu_work, msecs_to_jiffies(14000));
 #endif
 
 	NVT_LOG("NVT_TOUCH_ESD_PROTECT is %d\n", NVT_TOUCH_ESD_PROTECT);
 #if NVT_TOUCH_ESD_PROTECT
-	INIT_DELAYED_WORK(&nvt_esd_check_work, nvt_esd_check_func);
 	nvt_esd_check_wq = alloc_workqueue("nvt_esd_check_wq", WQ_MEM_RECLAIM, 1);
 	if (!nvt_esd_check_wq) {
 		NVT_ERR("nvt_esd_check_wq create workqueue failed\n");
 		ret = -ENOMEM;
-		goto err_create_nvt_esd_check_wq_failed;
+		goto err_cleanup;
 	}
-	queue_delayed_work(nvt_esd_check_wq, &nvt_esd_check_work,
+	if (!READ_ONCE(ts->removing))
+		queue_delayed_work(nvt_esd_check_wq, &nvt_esd_check_work,
 			msecs_to_jiffies(NVT_TOUCH_ESD_CHECK_PERIOD));
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 
@@ -2624,7 +2657,7 @@ static int nvt_ts_probe(struct spi_device *client)
 	ret = nvt_flash_proc_init();
 	if (ret != 0) {
 		NVT_ERR("nvt flash proc init failed. ret=%d\n", ret);
-		goto err_flash_proc_init_failed;
+		goto err_cleanup;
 	}
 #endif
 
@@ -2632,7 +2665,7 @@ static int nvt_ts_probe(struct spi_device *client)
 	ret = nvt_extra_proc_init();
 	if (ret != 0) {
 		NVT_ERR("nvt extra proc init failed. ret=%d\n", ret);
-		goto err_extra_proc_init_failed;
+		goto err_cleanup;
 	}
 #endif
 
@@ -2640,14 +2673,14 @@ static int nvt_ts_probe(struct spi_device *client)
 	ret = nvt_mp_proc_init();
 	if (ret != 0) {
 		NVT_ERR("nvt mp proc init failed. ret=%d\n", ret);
-		goto err_mp_proc_init_failed;
+		goto err_cleanup;
 	}
 
 #ifndef NVT_SAVE_TESTDATA_IN_FILE
 	ret = nvt_test_data_proc_init(ts->client);
 	if (ret < 0) {
 		NVT_ERR("nvt test data interface init failed. ret=%d\n", ret);
-		goto err_mp_proc_init_failed;
+		goto err_cleanup;
 	}
 #endif
 
@@ -2655,21 +2688,24 @@ static int nvt_ts_probe(struct spi_device *client)
 	attrs_p = (struct attribute_group *)devm_kzalloc(&ts->client->dev, sizeof(*attrs_p), GFP_KERNEL);
 	if (!attrs_p) {
 		NVT_ERR("no mem to alloc");
-		goto err_extra_proc_init_failed;
+		ret = -ENOMEM;
+		goto err_cleanup;
 	}
 	ts->attrs = attrs_p;
 	attrs_p->name = "panel_info";
 	attrs_p->attrs = nvt_panel_attr;
 	ret = sysfs_create_group(&ts->client->dev.kobj, ts->attrs);
+	if (ret)
+		goto err_cleanup;
+	ts->panel_info_created = true;
 
 	ts->event_wq = alloc_workqueue("nvt-event-queue",
 		WQ_UNBOUND | WQ_HIGHPRI | WQ_CPU_INTENSIVE, 1);
 	if (!ts->event_wq) {
 		NVT_ERR("Can not create work thread for suspend/resume!!");
 		ret = -ENOMEM;
-		goto err_alloc_work_thread_failed;
+		goto err_cleanup;
 	}
-	INIT_WORK(&ts->resume_work, nvt_resume_work);
 	/*INIT_WORK(&ts->suspend_work, nvt_suspend_work);*/
 
 #ifdef MI_DRM_NOTIFIER
@@ -2677,8 +2713,9 @@ static int nvt_ts_probe(struct spi_device *client)
 	ret = mi_drm_register_client(&ts->drm_notif);
 	if(ret) {
 		NVT_ERR("register drm_notifier failed. ret=%d\n", ret);
-		goto err_register_drm_notif_failed;
+		goto err_cleanup;
 	}
+	ts->notifier_registered = true;
 #else
 #endif
 #if defined(CONFIG_HAS_EARLYSUSPEND)
@@ -2688,15 +2725,16 @@ static int nvt_ts_probe(struct spi_device *client)
 	ret = register_early_suspend(&ts->early_suspend);
 	if(ret) {
 		NVT_ERR("register early suspend failed. ret=%d\n", ret);
-		goto err_register_early_suspend_failed;
+		goto err_cleanup;
 	}
+	ts->early_suspend_registered = true;
 #endif
 
 #ifdef CONFIG_TOUCHSCREEN_NVT_DEBUG_FS
 	ts->debugfs = debugfs_create_dir("tp_debug", NULL);
-	if (ts->debugfs) {
-		debugfs_create_file("switch_state", 0660, ts->debugfs, ts, &tpdbg_ops);
-		debugfs_create_file("touch_boost", 0660, ts->debugfs, ts, &nvt_touch_test_fops);
+	if (!IS_ERR_OR_NULL(ts->debugfs)) {
+		debugfs_create_file("switch_state", 0600, ts->debugfs, ts, &tpdbg_ops);
+		debugfs_create_file("touch_boost", 0600, ts->debugfs, ts, &nvt_touch_test_fops);
 	}
 #endif
 #ifdef CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE
@@ -2721,209 +2759,47 @@ static int nvt_ts_probe(struct spi_device *client)
 
 	return 0;
 
-#ifdef MI_DRM_NOTIFIER
-	if (mi_drm_unregister_client(&ts->drm_notif))
-		NVT_ERR("Error occurred while unregistering drm_notifier.\n");
-err_register_drm_notif_failed:
-#else
-#endif
-#if defined(CONFIG_HAS_EARLYSUSPEND)
-	unregister_early_suspend(&ts->early_suspend);
-err_register_early_suspend_failed:
-#endif
-	destroy_workqueue(ts->event_wq);
-err_alloc_work_thread_failed:
-#if NVT_TOUCH_MP
-nvt_mp_proc_deinit();
-err_mp_proc_init_failed:
-#endif
-#if NVT_TOUCH_EXT_PROC
-nvt_extra_proc_deinit();
-err_extra_proc_init_failed:
-#endif
-#if NVT_TOUCH_PROC
-nvt_flash_proc_deinit();
-err_flash_proc_init_failed:
-#endif
-
-timer_delete_sync(&ts->rf_timer);
-cancel_work_sync(&ts->resist_rf_work);
-cancel_work_sync(&ts->switch_mode_work);
-
-#if NVT_TOUCH_ESD_PROTECT
-	if (nvt_esd_check_wq) {
-		cancel_delayed_work_sync(&nvt_esd_check_work);
-		destroy_workqueue(nvt_esd_check_wq);
-		nvt_esd_check_wq = NULL;
-	}
-err_create_nvt_esd_check_wq_failed:
-#endif
-#if BOOT_UPDATE_FIRMWARE
-	if (nvt_fwu_wq) {
-		cancel_delayed_work_sync(&ts->nvt_fwu_work);
-		destroy_workqueue(nvt_fwu_wq);
-		nvt_fwu_wq = NULL;
-	}
-err_create_nvt_fwu_wq_failed:
-	if (nvt_lockdown_wq) {
-		cancel_delayed_work_sync(&ts->nvt_lockdown_work);
-		destroy_workqueue(nvt_lockdown_wq);
-		nvt_lockdown_wq = NULL;
-	}
-#endif
-err_create_nvt_lockdown_wq_failed:
-#if WAKEUP_GESTURE
-	device_init_wakeup(&ts->input_dev->dev, 0);
-#endif
-	free_irq(ts->client->irq, ts);
-err_int_request_failed:
-	input_unregister_device(ts->input_dev);
-	ts->input_dev = NULL;
-err_input_register_device_failed:
-	if (ts->input_dev) {
+err_cleanup:
+	nvt_ts_stop(ts);
+	if (ts->input_registered)
+		input_unregister_device(ts->input_dev);
+	else if (ts->input_dev)
 		input_free_device(ts->input_dev);
-		ts->input_dev = NULL;
-	}
-err_input_dev_alloc_failed:
-err_chipvertrim_failed:
+	spi_set_drvdata(client, NULL);
 	mutex_destroy(&ts->xbuf_lock);
 	mutex_destroy(&ts->lock);
-	nvt_gpio_deconfig(ts);
-err_gpio_config_failed:
-err_spi_setup:
-err_ckeck_full_duplex:
-	spi_set_drvdata(ts->client, NULL);
-	if (ts->xbuf) {
-		kfree(ts->xbuf);
-		ts->xbuf = NULL;
-	}
-	if (ts) {
-		kfree(ts);
-		ts = NULL;
-	}
+	kfree(ts->xbuf);
+	kfree(ts);
+	ts = NULL;
 	return ret;
 }
 
-/*******************************************************
-Description:
-	Novatek touchscreen driver release function.
-
-return:
-	Executive outcomes. 0---succeed.
-*******************************************************/
 static void nvt_ts_remove(struct spi_device *client)
 {
-	NVT_LOG("Removing driver...\n");
+	struct nvt_ts_data *data = spi_get_drvdata(client);
 
-#ifdef MI_DRM_NOTIFIER
-	if (mi_drm_unregister_client(&ts->drm_notif))
-		NVT_ERR("Error occurred while unregistering drm_notifier.\n");
-#else
-#endif
-#if defined(CONFIG_HAS_EARLYSUSPEND)
-	unregister_early_suspend(&ts->early_suspend);
-#endif
-#ifndef NVT_SAVE_TESTDATA_IN_FILE
-	nvt_test_data_proc_deinit();
-#endif
-#if NVT_TOUCH_MP
-	nvt_mp_proc_deinit();
-#endif
-#if NVT_TOUCH_EXT_PROC
-	nvt_extra_proc_deinit();
-#endif
-#if NVT_TOUCH_PROC
-	nvt_flash_proc_deinit();
-#endif
-
-#if NVT_TOUCH_ESD_PROTECT
-	if (nvt_esd_check_wq) {
-		cancel_delayed_work_sync(&nvt_esd_check_work);
-		nvt_esd_check_enable(false);
-		destroy_workqueue(nvt_esd_check_wq);
-		nvt_esd_check_wq = NULL;
-	}
-#endif
-
-#if BOOT_UPDATE_FIRMWARE
-	if (nvt_fwu_wq) {
-		cancel_delayed_work_sync(&ts->nvt_fwu_work);
-		destroy_workqueue(nvt_fwu_wq);
-		nvt_fwu_wq = NULL;
-	}
-#endif
-
-#if WAKEUP_GESTURE
-	device_init_wakeup(&ts->input_dev->dev, 0);
-#endif
-
-	nvt_irq_enable(false);
-	free_irq(ts->client->irq, ts);
-
-	mutex_destroy(&ts->xbuf_lock);
-	mutex_destroy(&ts->lock);
-
-	nvt_gpio_deconfig(ts);
-
-	if (ts->input_dev) {
-		input_unregister_device(ts->input_dev);
-		ts->input_dev = NULL;
-	}
-
-	spi_set_drvdata(ts->client, NULL);
-
-	if (ts) {
-		kfree(ts);
-		ts = NULL;
-	}
-
+	if (!data)
+		return;
+	nvt_ts_stop(data);
+	if (data->input_registered)
+		input_unregister_device(data->input_dev);
+	mutex_destroy(&data->xbuf_lock);
+	mutex_destroy(&data->lock);
+	spi_set_drvdata(client, NULL);
+	kfree(data->xbuf);
+	kfree(data);
+	ts = NULL;
 }
 
 static void nvt_ts_shutdown(struct spi_device *client)
 {
-	NVT_LOG("Shutdown driver...\n");
+	struct nvt_ts_data *data = spi_get_drvdata(client);
 
-	nvt_irq_enable(false);
-
-#ifdef MI_DRM_NOTIFIER
-	if (mi_drm_unregister_client(&ts->drm_notif))
-		NVT_ERR("Error occurred while unregistering drm_notifier.\n");
-#else
-#endif
-#if defined(CONFIG_HAS_EARLYSUSPEND)
-	unregister_early_suspend(&ts->early_suspend);
-#endif
-#if NVT_TOUCH_MP
-	nvt_mp_proc_deinit();
-#endif
-#if NVT_TOUCH_EXT_PROC
-	nvt_extra_proc_deinit();
-#endif
-#if NVT_TOUCH_PROC
-	nvt_flash_proc_deinit();
-#endif
-
-#if NVT_TOUCH_ESD_PROTECT
-	if (nvt_esd_check_wq) {
-		cancel_delayed_work_sync(&nvt_esd_check_work);
-		nvt_esd_check_enable(false);
-		destroy_workqueue(nvt_esd_check_wq);
-		nvt_esd_check_wq = NULL;
-	}
-#endif /* #if NVT_TOUCH_ESD_PROTECT */
-
-#if WAKEUP_GESTURE
-	device_init_wakeup(&ts->input_dev->dev, 0);
-#endif
+	if (data)
+		nvt_ts_stop(data);
 }
 
-/*******************************************************
-Description:
-	Novatek touchscreen driver suspend function.
 
-return:
-	Executive outcomes. 0---succeed.
-*******************************************************/
 static int32_t nvt_ts_suspend(struct device *dev)
 {
 	uint8_t buf[4] = {0};
@@ -3024,6 +2900,10 @@ return:
 static int32_t nvt_ts_resume(struct device *dev)
 {
 	int ret;
+
+	if (READ_ONCE(ts->removing))
+		return -ENODEV;
+
 	if (ts->dev_pm_suspend)
 		pm_stay_awake(dev);
 	if (!ts->db_wakeup) {
@@ -3079,7 +2959,8 @@ static int32_t nvt_ts_resume(struct device *dev)
 
 #if NVT_TOUCH_ESD_PROTECT
 	nvt_esd_check_enable(false);
-	queue_delayed_work(nvt_esd_check_wq, &nvt_esd_check_work,
+	if (!READ_ONCE(ts->removing))
+		queue_delayed_work(nvt_esd_check_wq, &nvt_esd_check_work,
 			msecs_to_jiffies(NVT_TOUCH_ESD_CHECK_PERIOD));
 #endif /* #if NVT_TOUCH_ESD_PROTECT */
 

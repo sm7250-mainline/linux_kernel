@@ -339,6 +339,12 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 	wdt->wdd.timeout = min(wdt->wdd.max_timeout, 30U);
 	watchdog_init_timeout(&wdt->wdd, 0, dev);
 
+	/* Keep the Picasso bring-up watchdog stopped before registering it. */
+	if (of_device_is_compatible(np, "qcom,apss-wdt-sm7250")) {
+		qcom_wdt_stop(&wdt->wdd);
+		dev_info(dev, "watchdog stopped for SM7250 bring-up\n");
+	}
+
 	/*
 	 * If WDT is already running, call WDT start which
 	 * will stop the WDT, set timeouts as bootloader
@@ -353,14 +359,6 @@ static int qcom_wdt_probe(struct platform_device *pdev)
 	ret = devm_watchdog_register_device(dev, &wdt->wdd);
 	if (ret)
 		return ret;
-
-	/*
-	 * picasso bring-up: unconditionally disable the bootloader-started
-	 * watchdog so a stalled bring-up does not silently reset the device.
-	 * (量产前应恢复接管喂狗)
-	 */
-	writel(0, wdt_addr(wdt, WDT_EN));
-	pr_info("qcom_wdt: probed, watchdog disabled for bringup\n");
 
 	platform_set_drvdata(pdev, wdt);
 	return 0;

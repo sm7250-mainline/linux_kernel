@@ -104,6 +104,9 @@
 /* 本树自有编号（下游 gcc-lito 为 108，与本项目时钟号空间冲突；
    无 DT 直接引用，仅驱动内部接线） */
 #define GCC_UFS_PHY_PHY_AUX_CLK_SRC		111
+/* picasso bring-up (迭代 38): ICE RCG 源（照下游 gcc-lito 移植，
+   无 DT 直接引用，作为 gcc_ufs_phy_ice_core_clk 的父源） */
+#define GCC_UFS_PHY_ICE_CORE_CLK_SRC		112
 #define GCC_DISP_AHB_CLK			120
 #define GCC_DISP_HF_AXI_CLK			121
 #define GCC_DISP_SF_AXI_CLK			122

@@ -10,6 +10,7 @@
 #include <linux/devfreq.h>
 #include <linux/dma-mapping.h>
 #include <linux/gpio/consumer.h>
+#include <linux/pinctrl/consumer.h>
 #include <linux/interconnect.h>
 #include <linux/module.h>
 #include <linux/of.h>
@@ -61,6 +62,12 @@ enum {
 
 #define QCOM_UFS_MAX_GEAR 5
 #define QCOM_UFS_MAX_LANE 2
+
+/* picasso bring-up（迭代 34）：下游 ufs-qcom.h 的厂商位定义（主线无）。
+ * PA_VS_CONFIG_REG1（0x9000，主线 ufs-qcom.h 已有）的
+ * SAVECONFIGTIME_MODE 位域——下游 link startup 前设置（QUNIPRO_CLK_
+ * GATING cap 路径）。 */
+#define SAVECONFIGTIME_MODE_MASK	0x6000
 
 enum {
 	MODE_MIN,
@@ -591,8 +598,18 @@ out:
  * 0x100fa1000）后控制器描述符抓取静默失败（doorbell 锁存但无完成中断）。
  * 强制 32 位使分配留在 4GB 内；Android 下游从未踩到（其分配不落 4GB+）。
  */
+static bool ufs_qcom_is_sm7250(struct ufs_hba *hba)
+{
+	return of_device_is_compatible(hba->dev->of_node, "qcom,sm7250-ufshc");
+}
+
 static int ufs_qcom_set_dma_mask(struct ufs_hba *hba)
 {
+	if (!ufs_qcom_is_sm7250(hba) &&
+	    (hba->capabilities & MASK_64_ADDRESSING_SUPPORT) &&
+	    !dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(64)))
+		return 0;
+
 	return dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(32));
 }
 
@@ -747,6 +764,22 @@ static int ufs_qcom_link_startup_notify(struct ufs_hba *hba,
 		 * completed.
 		 */
 		err = ufshcd_disable_host_tx_lcc(hba);
+		if (err)
+			return err;
+
+		/*
+		 * picasso bring-up（迭代 34 加，照下游 ufs_qcom_link_startup_
+		 * pre_change 的 QUNIPRO_CLK_GATING 分支——hw≥3 平台默认开
+		 * 该 cap）：link startup 前设置 PA_VS_CONFIG_REG1 的
+		 * SAVECONFIGTIME_MODE 位（0x6000）。主线仅有 device-quirk
+		 * 变体（bit12），host 端整写缺失，补齐。迭代 35 二分轮曾
+		 * 暂关，36 判明真凶为 init 期复位脉冲（见 device_reset_ctrl
+		 * 迭代 36 门），本补齐无罪，恢复启用。
+		 */
+		if (ufs_qcom_is_sm7250(hba) && host->hw_ver.major >= 0x3)
+			err = ufshcd_dme_rmw(hba, SAVECONFIGTIME_MODE_MASK,
+					     SAVECONFIGTIME_MODE_MASK,
+					     PA_VS_CONFIG_REG1);
 
 		/*
 		 * Restore HS/LS link startup mode set by bootloader
@@ -758,6 +791,9 @@ static int ufs_qcom_link_startup_notify(struct ufs_hba *hba,
 				      REG_UFS_DEBUG_SPARE_CFG);
 		break;
 	case POST_CHANGE:
+		/* picasso bring-up（迭代 36）：链路首次训练成功——此后
+		 * 设备复位脉冲解禁（EH/恢复路径；见 device_reset_ctrl）*/
+		host->link_started = true;
 		ufs_qcom_link_startup_post_change(hba);
 		break;
 	default:
@@ -770,12 +806,32 @@ static int ufs_qcom_link_startup_notify(struct ufs_hba *hba,
 static void ufs_qcom_device_reset_ctrl(struct ufs_hba *hba, bool asserted)
 {
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
+	int ret;
 
-	/* reset gpio is optional */
-	if (!host->device_reset)
+	/* picasso bring-up (迭代 36)：链路首次训练成功前禁止脉冲。
+	 * 主线 ufshcd_init 在 hba_enable 前无条件复位设备，本机设备
+	 * 复位后固件启动远超该窗口（32~35 实测 link startup 连败）；
+	 * 下游 4.19 从不在 probe 期复位（只在 EH 恢复路径）。 */
+	if (ufs_qcom_is_sm7250(hba) && !host->link_started)
 		return;
 
-	gpiod_set_value_cansleep(host->device_reset, asserted);
+	/* reset gpio is optional */
+	if (host->device_reset) {
+		gpiod_set_value_cansleep(host->device_reset, asserted);
+		return;
+	}
+
+	/* picasso bring-up (迭代 32): 无 reset-gpios 时走 pinctrl 状态
+	 * （picasso 的复位脚是 TLMM 专用 ufs_reset 组，非 gpio 范围；
+	 * 状态语义照下游 4.19 ufshcd core 的同名两态） */
+	if (host->dev_reset_pctrl && host->dev_reset_assert) {
+		ret = pinctrl_select_state(host->dev_reset_pctrl,
+			asserted ? host->dev_reset_assert
+				 : host->dev_reset_deassert);
+		if (ret < 0)
+			dev_err(hba->dev, "%s: %s failed with err %d\n",
+				__func__, asserted ? "Assert" : "Deassert", ret);
+	}
 }
 
 static int ufs_qcom_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op,
@@ -791,7 +847,8 @@ static int ufs_qcom_suspend(struct ufs_hba *hba, enum ufs_pm_op pm_op,
 
 
 	/* reset the connected UFS device during power down */
-	if (ufs_qcom_is_link_off(hba) && host->device_reset) {
+	if (ufs_qcom_is_link_off(hba) &&
+	    (host->device_reset || host->dev_reset_assert)) {
 		ufs_qcom_device_reset_ctrl(hba, true);
 		/*
 		 * After sending the SSU command, asserting the rst_n
@@ -1424,6 +1481,9 @@ static void ufs_qcom_set_caps(struct ufs_hba *hba)
 	 * LUN0 INQUIRY 挂死 offline）——bring-up 阶段禁用门控与相关 PM cap，
 	 * 链路/时钟常开；功耗阶段再修 ungating（疑似需 PHY 重校准）。
 	 */
+	if (!ufs_qcom_is_sm7250(hba))
+		hba->caps |= UFSHCD_CAP_CLK_GATING | UFSHCD_CAP_HIBERN8_WITH_CLK_GATING;
+
 	hba->caps |= UFSHCD_CAP_CLK_SCALING | UFSHCD_CAP_WB_WITH_CLK_SCALING;
 	hba->caps |= UFSHCD_CAP_AUTO_BKOPS_SUSPEND;
 	hba->caps |= UFSHCD_CAP_WB_EN;
@@ -1637,6 +1697,30 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 		goto out_variant_clear;
 	}
 
+	/* picasso bring-up (迭代 32): gpiod 缺席时尝试 pinctrl 两态
+	 * （"dev-reset-assert"/"dev-reset-deassert"）。两态不全则整体
+	 * 弃用，维持"复位线可选"的上游语义 */
+	if (!host->device_reset) {
+		host->dev_reset_pctrl = devm_pinctrl_get(dev);
+		if (!IS_ERR(host->dev_reset_pctrl)) {
+			struct pinctrl_state *assert_st, *deassert_st;
+
+			assert_st = pinctrl_lookup_state(host->dev_reset_pctrl,
+							 "dev-reset-assert");
+			deassert_st = pinctrl_lookup_state(host->dev_reset_pctrl,
+							   "dev-reset-deassert");
+			if (!IS_ERR(assert_st) && !IS_ERR(deassert_st)) {
+				host->dev_reset_assert = assert_st;
+				host->dev_reset_deassert = deassert_st;
+			} else {
+				devm_pinctrl_put(host->dev_reset_pctrl);
+				host->dev_reset_pctrl = NULL;
+			}
+		} else {
+			host->dev_reset_pctrl = NULL;
+		}
+	}
+
 	ufs_qcom_get_controller_revision(hba, &host->hw_ver.major,
 		&host->hw_ver.minor, &host->hw_ver.step);
 
@@ -1654,6 +1738,15 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 
 	ufs_qcom_set_caps(hba);
 	ufs_qcom_advertise_quirks(hba);
+	/* picasso bring-up (迭代 33)：hw4 会被 advertise_quirks 打上
+	 * REINIT_AFTER_MAX_GEAR_SWITCH → ufshcd_probe_hba 的 REINIT 块
+	 * 含 device reset 脉冲（真正的 init 期脉冲源是 ufshcd_init 的
+	 * 无条件调用，见 device_reset_ctrl 的迭代 36 门——本 quirk 是
+	 * 第二个潜在脉冲源）。下游从不在 probe 期复位设备；本机
+	 * gear3==max，reinit 流程无增益。照 ufs_qcom_fw_managed_init
+	 * 的既有模式清除。 */
+	if (ufs_qcom_is_sm7250(hba))
+		host->hba->quirks &= ~UFSHCD_QUIRK_REINIT_AFTER_MAX_GEAR_SWITCH;
 	ufs_qcom_set_host_params(hba);
 	ufs_qcom_set_phy_gear(host);
 	ufs_qcom_parse_gear_limits(hba);
@@ -2252,7 +2345,7 @@ static int ufs_qcom_device_reset(struct ufs_hba *hba)
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 
 	/* reset gpio is optional */
-	if (!host->device_reset)
+	if (!host->device_reset && !host->dev_reset_assert)
 		return -EOPNOTSUPP;
 
 	/*

@@ -249,8 +249,7 @@ static int lcdb_regulator_set_voltage(struct regulator_dev *rdev,
 				      unsigned int *selector)
 {
 	struct lcdb_regulator *lcdb = rdev_get_drvdata(rdev);
-	enum lcdb_reg_type type = (rdev == lcdb->ldo_rdev) ?
-				  LCDB_LDO : LCDB_NCP;
+	enum lcdb_reg_type type = rdev_get_id(rdev);
 	int voltage_mv = min_uV / 1000;
 	int ret;
 
@@ -277,8 +276,7 @@ static int lcdb_regulator_set_voltage(struct regulator_dev *rdev,
 static int lcdb_regulator_get_voltage(struct regulator_dev *rdev)
 {
 	struct lcdb_regulator *lcdb = rdev_get_drvdata(rdev);
-	enum lcdb_reg_type type = (rdev == lcdb->ldo_rdev) ?
-				  LCDB_LDO : LCDB_NCP;
+	enum lcdb_reg_type type = rdev_get_id(rdev);
 	unsigned int reg = (type == LCDB_LDO) ?
 			   LCDB_LDO_OUTPUT_VOLTAGE_REG :
 			   LCDB_NCP_OUTPUT_VOLTAGE_REG;
@@ -324,6 +322,7 @@ static int lcdb_register_child(struct lcdb_regulator *lcdb,
 		return -ENOMEM;
 
 	desc->name = name;
+	desc->id = type;
 	/* of_match 与子节点名（ldo/ncp）对应，供 of_get_regulator_init_data 匹配 */
 	desc->of_match = (type == LCDB_LDO) ? "ldo" : "ncp";
 	desc->owner = THIS_MODULE;

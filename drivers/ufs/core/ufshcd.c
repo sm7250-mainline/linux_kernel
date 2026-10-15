@@ -91,12 +91,6 @@ enum {
 /* Interrupt aggregation default timeout, unit: 40us */
 #define INT_AGGR_DEF_TO	0x02
 
-/* TEMP-DEBUG(迭代29): UFS 首命令超时定位插桩（UFSDBG 打印），问题定位后删除 */
-static atomic_t ufsdbg_qc_n = ATOMIC_INIT(0);
-static atomic_t ufsdbg_irq_n = ATOMIC_INIT(0);
-#define UFSDBG_LIMIT	8
-
-
 /* default delay of autosuspend: 2000 ms */
 #define RPM_AUTOSUSPEND_DELAY_MS 2000
 
@@ -3103,13 +3097,6 @@ static enum scsi_qc_status ufshcd_queuecommand(struct Scsi_Host *host,
 	int err = 0;
 	struct ufs_hw_queue *hwq = NULL;
 
-	/* TEMP-DEBUG(迭代29): 命令到达驱动入口（含 busy 拒绝），问题定位后删除 */
-	if (atomic_inc_return(&ufsdbg_qc_n) <= 40)
-		pr_info("UFSDBG qc-enter: op=0x%02x tag=%d to=%ums state=%d\n",
-			cmd->cmnd[0], tag,
-			jiffies_to_msecs(scsi_cmd_to_rq(cmd)->timeout),
-			hba->ufshcd_state);
-
 	switch (hba->ufshcd_state) {
 	case UFSHCD_STATE_OPERATIONAL:
 		break;
@@ -3192,27 +3179,8 @@ static enum scsi_qc_status ufshcd_queue_reserved_command(struct Scsi_Host *host,
 	struct ufs_hw_queue *hwq =
 		hba->mcq_enabled ? ufshcd_mcq_req_to_hwq(hba, rq) : NULL;
 
-	/* TEMP-DEBUG(迭代29): dev cmd 下发时寄存器现场 + doorbell 写后回读 */
-	if (atomic_inc_return(&ufsdbg_qc_n) <= 40)
-		pr_info("UFSDBG rq: tag=%d to=%ums IE=0x%x DB=0x%x RS=0x%x CS=0x%x state=%d AGG=0x%x UTRLBA=0x%x%08x CE=0x%x utrdl_dma=0x%llx\n",
-			rq->tag, jiffies_to_msecs(rq->timeout),
-			ufshcd_readl(hba, REG_INTERRUPT_ENABLE),
-			ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_DOOR_BELL),
-			ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_LIST_RUN_STOP),
-			ufshcd_readl(hba, REG_CONTROLLER_STATUS),
-			hba->ufshcd_state,
-			ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_INT_AGG_CONTROL),
-			ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_LIST_BASE_H),
-			ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_LIST_BASE_L),
-			ufshcd_readl(hba, REG_CONTROLLER_ENABLE),
-			(unsigned long long)hba->utrdl_dma_addr);
-
 	ufshcd_add_query_upiu_trace(hba, UFS_QUERY_SEND, lrbp->ucd_req_ptr);
 	ufshcd_send_command(hba, cmd, hwq);
-
-	if (atomic_read(&ufsdbg_qc_n) <= 40)
-		pr_info("UFSDBG rq-post: DB=0x%x (readback after write)\n",
-			ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_DOOR_BELL));
 	return 0;
 }
 
@@ -3395,12 +3363,6 @@ static int ufshcd_issue_dev_cmd(struct ufs_hba *hba, struct scsi_cmnd *cmd,
 
 	rq->timeout = timeout;
 	sts = blk_execute_rq(rq, true);
-	/* TEMP-DEBUG(迭代29): dev cmd 执行结果，问题定位后删除 */
-	pr_info("UFSDBG devcmd done: to=%ums sts=%d ocs=0x%x IE=0x%x DB=0x%x RS=0x%x\n",
-		jiffies_to_msecs(timeout), sts, lrbp->utr_descriptor_ptr->header.ocs,
-		ufshcd_readl(hba, REG_INTERRUPT_ENABLE),
-		ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_DOOR_BELL),
-		ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_LIST_RUN_STOP));
 	if (sts != BLK_STS_OK)
 		return blk_status_to_errno(sts);
 	return lrbp->utr_descriptor_ptr->header.ocs;
@@ -4914,23 +4876,6 @@ static int ufshcd_dme_change_power_mode(struct ufs_hba *hba,
 {
 	int ret;
 
-	/* TEMP-DEBUG(迭代29): HS 切换定位，问题定位后删除 */
-	pr_info("UFSDBG pmc: request gear=%d/%d lane=%d/%d pwr=%d/%d rate=%d (cur %d/%d %d/%d %d/%d %d) policy=%d\n",
-		pwr_mode->gear_rx, pwr_mode->gear_tx,
-		pwr_mode->lane_rx, pwr_mode->lane_tx,
-		pwr_mode->pwr_rx, pwr_mode->pwr_tx,
-		pwr_mode->hs_rate,
-		hba->pwr_info.gear_rx, hba->pwr_info.gear_tx,
-		hba->pwr_info.lane_rx, hba->pwr_info.lane_tx,
-		hba->pwr_info.pwr_rx, hba->pwr_info.pwr_tx,
-		hba->pwr_info.hs_rate, pmc_policy);
-
-	/* TEMP-DEBUG(迭代29-PWM 实验): 强制 PWM(SLOWAUTO)，隔离 HS/PHY 问题 */
-	pwr_mode->pwr_rx = SLOWAUTO_MODE;
-	pwr_mode->pwr_tx = SLOWAUTO_MODE;
-	pwr_mode->hs_rate = 0;
-
-
 	/* if already configured to the requested pwr_mode */
 	if (pmc_policy == UFSHCD_PMC_POLICY_DONT_FORCE &&
 	    pwr_mode->gear_rx == hba->pwr_info.gear_rx &&
@@ -5033,14 +4978,6 @@ int ufshcd_change_power_mode(struct ufs_hba *hba,
 	ufshcd_vops_pwr_change_notify(hba, PRE_CHANGE, pwr_mode);
 
 	ret = ufshcd_dme_change_power_mode(hba, pwr_mode, pmc_policy);
-
-	/* TEMP-DEBUG(迭代29): HS 切换结果 + PMC 状态位，问题定位后删除 */
-	pr_info("UFSDBG pmc done: ret=%d CS=0x%x (pmc bits 0x%x) gear=%d/%d rate=%d\n",
-		ret, ufshcd_readl(hba, REG_CONTROLLER_STATUS),
-		(ufshcd_readl(hba, REG_CONTROLLER_STATUS) >>
-			__bf_shf(UIC_POWER_MODE_CHANGE_REQ_STATUS_MASK)) & 0x7,
-		hba->pwr_info.gear_rx, hba->pwr_info.gear_tx,
-		hba->pwr_info.hs_rate);
 
 	if (!ret)
 		ufshcd_vops_pwr_change_notify(hba, POST_CHANGE, pwr_mode);
@@ -5179,13 +5116,6 @@ int ufshcd_make_hba_operational(struct ufs_hba *hba)
 			"Host controller not ready to process requests");
 		err = -EIO;
 	}
-
-	/* TEMP-DEBUG(迭代29): operational 化完成现场，问题定位后删除 */
-	pr_info("UFSDBG op: IE=0x%x DB=0x%x RS=0x%x CS=0x%x err=%d\n",
-		ufshcd_readl(hba, REG_INTERRUPT_ENABLE),
-		ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_DOOR_BELL),
-		ufshcd_readl(hba, REG_UTP_TRANSFER_REQ_LIST_RUN_STOP),
-		ufshcd_readl(hba, REG_CONTROLLER_STATUS), err);
 
 	return err;
 }
@@ -7536,21 +7466,6 @@ static irqreturn_t ufshcd_intr(int irq, void *__hba)
 
 	last_intr_status = intr_status = ufshcd_readl(hba, REG_INTERRUPT_STATUS);
 
-	/* TEMP-DEBUG(迭代29): 中断时间线（前 60 次）+ 首次 UTP 完成一击，问题定位后删除 */
-	{
-		int n = atomic_inc_return(&ufsdbg_irq_n);
-
-		if (n <= 60)
-			pr_info("UFSDBG irq#%d t=%ums status=0x%08x enable=0x%08x outstanding=0x%lx\n",
-				n, jiffies_to_msecs(jiffies - INITIAL_JIFFIES),
-				intr_status,
-				ufshcd_readl(hba, REG_INTERRUPT_ENABLE),
-				hba->outstanding_reqs);
-		else if (intr_status & UTP_TRANSFER_REQ_COMPL)
-			pr_info_once("UFSDBG first utp completion at t=%ums\n",
-				     jiffies_to_msecs(jiffies - INITIAL_JIFFIES));
-	}
-
 	/*
 	 * There could be max of hba->nutrs reqs in flight and in worst case
 	 * if the reqs get finished 1 by 1 after the interrupt status is
@@ -8152,17 +8067,6 @@ static int ufshcd_abort(struct scsi_cmnd *cmd)
 	int err = FAILED;
 	bool outstanding;
 	u32 reg;
-
-	/* TEMP-DEBUG(迭代29): 超时定位插桩，问题定位后删除 */
-	pr_info("UFSDBG abort: cdb=%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x tag=%d to=%ums now=%ums hba_state=%d outstanding=0x%lx rq_flags=0x%x id=%d lun=%llu allowed=%d\n",
-		cmd->cmnd[0], cmd->cmnd[1], cmd->cmnd[2], cmd->cmnd[3],
-		cmd->cmnd[4], cmd->cmnd[5], cmd->cmnd[6], cmd->cmnd[7],
-		cmd->cmnd[8], cmd->cmnd[9], cmd->cmnd[10], cmd->cmnd[11],
-		cmd->cmnd[12], cmd->cmnd[13], cmd->cmnd[14], cmd->cmnd[15],
-		tag, jiffies_to_msecs(rq->timeout),
-		jiffies_to_msecs(jiffies - INITIAL_JIFFIES),
-		hba->ufshcd_state, hba->outstanding_reqs, rq->rq_flags,
-		cmd->device->id, cmd->device->lun, cmd->allowed);
 
 	ufshcd_hold(hba);
 
@@ -11327,9 +11231,6 @@ int ufshcd_init(struct ufs_hba *hba, void __iomem *mmio_base, unsigned int irq)
 	ufshcd_host_memory_configure(hba);
 
 	host->can_queue = hba->nutrs - UFSHCD_NUM_RESERVED;
-	/* TEMP-DEBUG(迭代29-并发实验): 钳 1 验证"多命令在途"是否破坏链路，
-	   扫描期串行命令全通、块层并发 READ 全挂（doorbell 多位在途+OCS=0） */
-	host->can_queue = 1;
 	/*
 	 * Set the queue depth for WLUNs. ufs_get_device_desc() will increase
 	 * host->cmd_per_lun to a larger value.
