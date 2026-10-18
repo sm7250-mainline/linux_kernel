@@ -251,6 +251,16 @@ struct a6xx_hfi_msg_feature_ctrl {
 	u32 data;
 } __packed;
 
+#define HFI_H2F_MSG_SET_VALUE 13
+#define HFI_VALUE_LM_CS0 115
+
+struct a6xx_hfi_msg_set_value {
+	u32 header;
+	u32 type;
+	u32 subtype;
+	u32 data;
+} __packed;
+
 #define HFI_H2F_MSG_CORE_FW_START 14
 
 struct a6xx_hfi_msg_core_fw_start {

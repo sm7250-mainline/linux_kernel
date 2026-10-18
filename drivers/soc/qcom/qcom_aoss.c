@@ -651,6 +651,7 @@ static const struct of_device_id qmp_dt_match[] = {
 	{ .compatible = "qcom,sc7280-aoss-qmp", },
 	{ .compatible = "qcom,sdm845-aoss-qmp", },
 	{ .compatible = "qcom,sm8150-aoss-qmp", },
+	{ .compatible = "qcom,sm7250-aoss-qmp", },
 	{ .compatible = "qcom,sm8250-aoss-qmp", },
 	{ .compatible = "qcom,sm8350-aoss-qmp", },
 	{ .compatible = "qcom,aoss-qmp", },

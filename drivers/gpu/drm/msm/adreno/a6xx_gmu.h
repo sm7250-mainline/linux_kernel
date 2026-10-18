@@ -104,6 +104,22 @@ struct a6xx_gmu {
 	int nr_gpu_bws;
 	unsigned long gpu_bw_table[GMU_MAX_GX_FREQS];
 	u32 gpu_ib_votes[GMU_MAX_GX_FREQS][GMU_MAX_BCMS];
+	u8 gpu_bw_default[GMU_MAX_GX_FREQS];
+	u8 gpu_bw_min[GMU_MAX_GX_FREQS];
+	u8 gpu_bw_max[GMU_MAX_GX_FREQS];
+	int current_bw_index;
+	int bus_modifier;
+	u32 bus_norm_max;
+	bool bus_scaling;
+	u64 bus_counter[6];
+
+	bool lm_enabled;
+	u32 gaming_bin;
+	u32 lm_slope;
+	u32 lm_throttle_mask;
+	u64 lm_counter[3];
+	u64 lm_busy_raw;
+	u64 lm_busy_cycles;
 
 	int nr_gmu_freqs;
 	unsigned long gmu_freqs[GMU_MAX_CX_FREQS];
@@ -174,6 +190,14 @@ static inline u64 gmu_read64(struct a6xx_gmu *gmu, u32 lo, u32 hi)
 	return val;
 }
 
+static inline u64 a6xx_gmu_counter_delta(u64 value, u64 *previous)
+{
+	u64 delta = value - *previous;
+
+	*previous = value;
+	return delta;
+}
+
 #define gmu_poll_timeout(gmu, addr, val, cond, interval, timeout) \
 	readl_poll_timeout((gmu)->mmio + (GMU_BYTE_OFFSET(gmu, addr)), val, \
 		cond, interval, timeout)
@@ -233,6 +257,9 @@ int a6xx_hfi_start(struct a6xx_gmu *gmu, int boot_state);
 void a6xx_hfi_stop(struct a6xx_gmu *gmu);
 int a6xx_hfi_send_prep_slumber(struct a6xx_gmu *gmu);
 int a6xx_hfi_set_freq(struct a6xx_gmu *gmu, u32 perf_index, u32 bw_index);
+int a6xx_hfi_set_ifpc(struct a6xx_gmu *gmu, bool enable);
+void a6xx_gmu_bus_update(struct msm_gpu *gpu, u64 busy_time, u64 total_time);
+int a6xx_gmu_set_ifpc(struct a6xx_gmu *gmu, bool enable);
 
 bool a6xx_gmu_gx_is_on(struct adreno_gpu *adreno_gpu);
 bool a7xx_gmu_gx_is_on(struct adreno_gpu *adreno_gpu);

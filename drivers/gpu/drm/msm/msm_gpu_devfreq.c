@@ -109,6 +109,10 @@ static int msm_devfreq_get_dev_status(struct device *dev,
 
 	status->busy_time = busy_time;
 
+	if (gpu->funcs->gpu_bus_update)
+		gpu->funcs->gpu_bus_update(gpu, status->busy_time,
+					   status->total_time);
+
 	return 0;
 }
 

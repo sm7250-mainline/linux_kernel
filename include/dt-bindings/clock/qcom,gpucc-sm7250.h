@@ -22,6 +22,14 @@
 #define GPU_CC_SLEEP_CLK				11
 #define GPU_CC_HLOS1_VOTE_GPU_SMMU_CLK			12
 
+/* GPU_CC resets (register layout shared with lito/kona). */
+#define GPUCC_GPU_CC_ACD_BCR				0
+#define GPUCC_GPU_CC_CX_BCR				1
+#define GPUCC_GPU_CC_GFX3D_AON_BCR			2
+#define GPUCC_GPU_CC_GMU_BCR				3
+#define GPUCC_GPU_CC_GX_BCR				4
+#define GPUCC_GPU_CC_XO_BCR				5
+
 /* GDSC（独立编号空间，GMU power-domains 引用 0=cx / 1=gx） */
 #define GPU_CX_GDSC					0
 #define GPU_GX_GDSC					1

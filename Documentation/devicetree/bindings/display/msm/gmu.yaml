@@ -217,6 +217,7 @@ allOf:
         compatible:
           contains:
             enum:
+              - qcom,adreno-gmu-620.2
               - qcom,adreno-gmu-650.2
     then:
       properties:
@@ -238,6 +239,7 @@ allOf:
         compatible:
           contains:
             enum:
+              - qcom,adreno-gmu-620.2
               - qcom,adreno-gmu-640.1
               - qcom,adreno-gmu-650.2
     then:
@@ -256,6 +258,15 @@ allOf:
             - const: cxo
             - const: axi
             - const: memnoc
+
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: qcom,adreno-gmu-620.2
+    then:
+      required:
+        - qcom,qmp
 
   - if:
       properties:

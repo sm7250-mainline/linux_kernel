@@ -54,6 +54,7 @@ static const struct pll_vco lucid_vco[] = {
 /* ≈500MHz（l=0x1A + alpha=0xAAA），下游 gmu_clk_src 500MHz 档的源 */
 static const struct alpha_pll_config gpu_cc_pll1_config = {
 	.l = 0x1A,
+	.cal_l = 0x44,
 	.alpha = 0xAAA,
 	.config_ctl_val = 0x20485699,
 	.config_ctl_hi_val = 0x00002261,
@@ -108,7 +109,8 @@ static struct clk_rcg2 gpu_cc_gmu_clk_src = {
 		.parent_data = gpu_cc_parent_data_0,
 		.num_parents = ARRAY_SIZE(gpu_cc_parent_data_0),
 		.flags = CLK_SET_RATE_PARENT,
-		.ops = &clk_rcg2_ops,
+		/* Mainline equivalent of downstream enable_safe_config. */
+		.ops = &clk_rcg2_shared_ops,
 	},
 };
 
@@ -293,6 +295,15 @@ static struct gdsc gpu_gx_gdsc = {
 	.flags = CLAMP_IO | AON_RESET | POLL_CFG_GDSCR,
 };
 
+static const struct qcom_reset_map gpu_cc_sm7250_resets[] = {
+	[GPUCC_GPU_CC_ACD_BCR] = { 0x1160 },
+	[GPUCC_GPU_CC_CX_BCR] = { 0x1068 },
+	[GPUCC_GPU_CC_GFX3D_AON_BCR] = { 0x10a0 },
+	[GPUCC_GPU_CC_GMU_BCR] = { 0x111c },
+	[GPUCC_GPU_CC_GX_BCR] = { 0x1008 },
+	[GPUCC_GPU_CC_XO_BCR] = { 0x1000 },
+};
+
 static struct clk_regmap *gpu_cc_sm7250_clocks[] = {
 	[GPU_CC_AHB_CLK] = &gpu_cc_ahb_clk.clkr,
 	[GPU_CC_CRC_AHB_CLK] = &gpu_cc_crc_ahb_clk.clkr,
@@ -326,6 +337,8 @@ static const struct qcom_cc_desc gpu_cc_sm7250_desc = {
 	.config = &gpu_cc_sm7250_regmap_config,
 	.clks = gpu_cc_sm7250_clocks,
 	.num_clks = ARRAY_SIZE(gpu_cc_sm7250_clocks),
+	.resets = gpu_cc_sm7250_resets,
+	.num_resets = ARRAY_SIZE(gpu_cc_sm7250_resets),
 	.gdscs = gpu_cc_sm7250_gdscs,
 	.num_gdscs = ARRAY_SIZE(gpu_cc_sm7250_gdscs),
 };

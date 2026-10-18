@@ -5,6 +5,7 @@
 #include <linux/clk.h>
 #include <linux/firmware/qcom/qcom_scm.h>
 #include <linux/interconnect.h>
+#include <linux/nvmem-consumer.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pm_domain.h>
@@ -33,6 +34,29 @@ static void a6xx_gmu_fault(struct a6xx_gmu *gmu)
 
 	/* Queue the GPU handler because we need to treat this as a recovery */
 	kthread_queue_work(gpu->worker, &gpu->recover_work);
+}
+
+static int a6xx_gmu_find_bw_index(struct a6xx_gmu *gmu, unsigned long bw)
+{
+	int i;
+
+	for (i = 0; i < gmu->nr_gpu_bws; i++)
+		if (gmu->gpu_bw_table[i] == bw)
+			return i;
+
+	return -EINVAL;
+}
+
+static u32 a6xx_gmu_get_bw_index(struct a6xx_gmu *gmu, u32 perf_index)
+{
+	int index;
+
+	if (!gmu->bus_scaling)
+		return gmu->gpu_bw_default[perf_index];
+
+	index = gmu->gpu_bw_default[perf_index] + gmu->bus_modifier;
+	return clamp(index, (int)gmu->gpu_bw_min[perf_index],
+		     (int)gmu->gpu_bw_max[perf_index]);
 }
 
 static irqreturn_t a6xx_gmu_irq(int irq, void *data)
@@ -160,6 +184,7 @@ void a6xx_gmu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(adreno_gpu);
 	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
 	u32 perf_index;
+	u32 previous_perf_index = gmu->current_perf_index;
 	u32 bw_index = 0;
 	unsigned long gpu_freq;
 	int ret = 0;
@@ -173,14 +198,20 @@ void a6xx_gmu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 		if (gpu_freq == gmu->gpu_freqs[perf_index])
 			break;
 
-	/* If enabled, find the corresponding DDR bandwidth index */
+	/* If enabled, find the corresponding DDR bandwidth index. */
 	if (info->bcms && gmu->nr_gpu_bws > 1) {
 		unsigned int bw = dev_pm_opp_get_bw(opp, true, 0);
 
-		for (bw_index = 0; bw_index < gmu->nr_gpu_bws - 1; bw_index++) {
-			if (bw == gmu->gpu_bw_table[bw_index])
-				break;
-		}
+		/*
+		 * Match downstream: discard an undervote, or return to the
+		 * OPP default before increasing GPU frequency.  A positive vote
+		 * may be retained while reducing GPU frequency.
+		 */
+		if (gmu->bus_modifier < 0 || perf_index > previous_perf_index)
+			gmu->bus_modifier = 0;
+
+		bw_index = a6xx_gmu_get_bw_index(gmu, perf_index);
+		gmu->current_bw_index = bw_index;
 
 		/* Vote AB as a fraction of the max bandwidth, starting from A750 */
 		if (bw && adreno_is_a750_family(adreno_gpu)) {
@@ -219,7 +250,11 @@ void a6xx_gmu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 		return;
 
 	if (!gmu->legacy) {
-		a6xx_hfi_set_freq(gmu, perf_index, bw_index);
+		ret = a6xx_hfi_set_freq(gmu, perf_index, bw_index);
+		if (ret)
+			DRM_DEV_ERROR(gmu->dev,
+				      "Unable to set GPU perf/bw index %u/%u (%d)\n",
+				      perf_index, bw_index, ret);
 		/* With Bandwidth voting, we now vote for all resources, so skip OPP set */
 		if (!bw_index)
 			dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
@@ -246,6 +281,136 @@ void a6xx_gmu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
 		dev_err(gmu->dev, "GMU set GPU frequency error: %d\n", ret);
 
 	dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
+}
+
+#define A620_GPUBW_NORM_MAX	350
+#define A620_GPUBW_TARGET	80
+#define A620_GPUBW_GPU_CAP	75
+#define A620_GPUBW_WAIT_CAP	10
+#define A620_GPUBW_HYST		5
+
+static u64 a620_gpu_read64(struct msm_gpu *gpu, u32 lo, u32 hi)
+{
+	u32 high, low, check;
+
+	do {
+		high = gpu_read(gpu, hi);
+		low = gpu_read(gpu, lo);
+		check = gpu_read(gpu, hi);
+	} while (high != check);
+
+	return ((u64)high << 32) | low;
+}
+
+static u64 a620_bus_counter_delta(u64 value, u64 *previous)
+{
+	/* GX/IFPC can reset these counters instead of wrapping them. */
+	u64 delta = value >= *previous ? value - *previous : value;
+
+	*previous = value;
+	return delta;
+}
+
+void a6xx_gmu_bus_update(struct msm_gpu *gpu, u64 busy_time, u64 total_time)
+{
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(adreno_gpu);
+	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
+	u64 ram_time = 0, ram_wait = 0;
+	u64 max_bw, current_bw, previous_bw;
+	u32 norm_max_cycles, norm_cycles, wait_percent, gpu_percent;
+	u32 up_threshold, down_threshold;
+	int old_modifier, next_index, ret;
+	bool perf_oob = false;
+
+	if (!adreno_is_a620(adreno_gpu) || !gmu->bus_scaling ||
+	    !total_time || gmu->current_perf_index <= 0)
+		return;
+
+	mutex_lock(&gmu->lock);
+	if (gmu->idle_level == GMU_IDLE_STATE_IFPC &&
+	    !test_bit(GMU_STATUS_OOB_PERF_SET, &gmu->status)) {
+		ret = a6xx_gmu_set_oob(gmu, GMU_OOB_PERFCOUNTER_SET);
+		if (ret)
+			goto out;
+		perf_oob = true;
+	}
+
+	ram_time += a620_bus_counter_delta(
+		a620_gpu_read64(gpu, REG_A6XX_GBIF_PERF_CNT_LOW0,
+				 REG_A6XX_GBIF_PERF_CNT_HIGH0), &gmu->bus_counter[0]);
+	ram_time += a620_bus_counter_delta(
+		a620_gpu_read64(gpu, REG_A6XX_GBIF_PERF_CNT_LOW1,
+				 REG_A6XX_GBIF_PERF_CNT_HIGH1), &gmu->bus_counter[1]);
+	ram_time += a620_bus_counter_delta(
+		a620_gpu_read64(gpu, REG_A6XX_GBIF_PERF_CNT_LOW2,
+				 REG_A6XX_GBIF_PERF_CNT_HIGH2), &gmu->bus_counter[2]);
+	ram_time += a620_bus_counter_delta(
+		a620_gpu_read64(gpu, REG_A6XX_GBIF_PERF_CNT_LOW3,
+				 REG_A6XX_GBIF_PERF_CNT_HIGH3), &gmu->bus_counter[3]);
+	ram_wait += a620_bus_counter_delta(
+		a620_gpu_read64(gpu, REG_A6XX_GBIF_PWR_CNT_LOW0,
+				 REG_A6XX_GBIF_PWR_CNT_HIGH0), &gmu->bus_counter[4]);
+	ram_wait += a620_bus_counter_delta(
+		a620_gpu_read64(gpu, REG_A6XX_GBIF_PWR_CNT_LOW1,
+				 REG_A6XX_GBIF_PWR_CNT_HIGH1), &gmu->bus_counter[5]);
+
+	max_bw = gmu->gpu_bw_table[gmu->nr_gpu_bws - 1];
+	current_bw = gmu->gpu_bw_table[gmu->current_bw_index];
+	previous_bw = gmu->current_bw_index > 0 ?
+		gmu->gpu_bw_table[gmu->current_bw_index - 1] : 0;
+
+	norm_max_cycles = div64_u64(ram_time, total_time);
+	norm_cycles = div64_u64((ram_time + ram_wait) * 100,
+				 total_time * A620_GPUBW_TARGET);
+	wait_percent = ram_time ? div64_u64(ram_wait * 100, ram_time) : 0;
+	gpu_percent = min_t(u64, div64_u64(busy_time * 100, total_time), 100);
+	up_threshold = div64_u64(current_bw * 100, max_bw);
+	up_threshold = up_threshold > A620_GPUBW_HYST ?
+		up_threshold - A620_GPUBW_HYST : 0;
+	up_threshold = up_threshold * gmu->bus_norm_max / 100;
+	down_threshold = div64_u64(previous_bw * 100, max_bw);
+	down_threshold = down_threshold > 2 * A620_GPUBW_HYST ?
+		down_threshold - 2 * A620_GPUBW_HYST : 0;
+	down_threshold = down_threshold * gmu->bus_norm_max / 100;
+
+	old_modifier = gmu->bus_modifier;
+	if (norm_max_cycles > gmu->bus_norm_max) {
+		/* Picasso has no fixed qcom,bus-accesses, so the watermark floats. */
+		gmu->bus_norm_max = norm_max_cycles;
+		if (gmu->current_bw_index <
+		    gmu->gpu_bw_max[gmu->current_perf_index])
+			gmu->bus_modifier++;
+	} else if ((norm_cycles > up_threshold ||
+	     wait_percent > A620_GPUBW_WAIT_CAP) &&
+	    gpu_percent > A620_GPUBW_GPU_CAP &&
+	    gmu->current_bw_index <
+		gmu->gpu_bw_max[gmu->current_perf_index])
+		gmu->bus_modifier++;
+	else if (norm_cycles < down_threshold &&
+		 gmu->current_perf_index < gmu->nr_gpu_freqs - 1 &&
+		 gmu->current_bw_index >
+		gmu->gpu_bw_min[gmu->current_perf_index])
+		gmu->bus_modifier--;
+
+	next_index = a6xx_gmu_get_bw_index(gmu, gmu->current_perf_index);
+	if (next_index == gmu->current_bw_index)
+		goto out;
+
+	ret = a6xx_hfi_set_freq(gmu, gmu->current_perf_index, next_index);
+	if (ret) {
+		gmu->bus_modifier = old_modifier;
+		DRM_DEV_ERROR_RATELIMITED(gmu->dev,
+			"Unable to scale GPU bandwidth to index %d (%d)\n",
+			next_index, ret);
+		goto out;
+	}
+
+	gmu->current_bw_index = next_index;
+out:
+	if (perf_oob)
+		a6xx_gmu_clear_oob(gmu, GMU_OOB_PERFCOUNTER_SET);
+	mutex_unlock(&gmu->lock);
 }
 
 unsigned long a6xx_gmu_get_freq(struct msm_gpu *gpu)
@@ -691,7 +856,7 @@ static void a6xx_gmu_rpmh_init(struct a6xx_gmu *gmu)
 	 * 与 kona a650 的 true 相反）——按家族硬判会跳过 PDC 序列加载，
 	 * GMU/RSC 无法执行电源切换（实测 OOB 全超时、HFI 正常）。排除之。
 	 */
-	bool lito_a620 = (adreno_gpu->chip_id & 0xfffff000) == 0x06020000;
+	bool lito_a620 = adreno_is_a620(adreno_gpu);
 
 	if ((adreno_is_a650_family(adreno_gpu) && !lito_a620) ||
 	    adreno_is_a7xx(adreno_gpu))
@@ -887,6 +1052,33 @@ static void a6xx_gmu_power_config(struct a6xx_gmu *gmu)
 		A6XX_GMU_RPMH_CTRL_MX_VOTE_ENABLE |
 		A6XX_GMU_RPMH_CTRL_CX_VOTE_ENABLE |
 		A6XX_GMU_RPMH_CTRL_GFX_VOTE_ENABLE);
+}
+
+int a6xx_gmu_set_ifpc(struct a6xx_gmu *gmu, bool enable)
+{
+	int ret;
+
+	if ((gmu->idle_level == GMU_IDLE_STATE_IFPC) == enable)
+		return 0;
+
+	if (enable) {
+		gmu->idle_level = GMU_IDLE_STATE_IFPC;
+		a6xx_gmu_power_config(gmu);
+		ret = a6xx_hfi_set_ifpc(gmu, true);
+		if (ret) {
+			gmu->idle_level = GMU_IDLE_STATE_ACTIVE;
+			a6xx_gmu_power_config(gmu);
+			return ret;
+		}
+	} else {
+		ret = a6xx_hfi_set_ifpc(gmu, false);
+		if (ret)
+			return ret;
+		gmu->idle_level = GMU_IDLE_STATE_ACTIVE;
+		a6xx_gmu_power_config(gmu);
+	}
+
+	return 0;
 }
 
 struct block_header {
@@ -1222,6 +1414,9 @@ static void a6xx_gmu_set_initial_freq(struct msm_gpu *gpu, struct a6xx_gmu *gmu)
 {
 	struct dev_pm_opp *gpu_opp;
 	unsigned long gpu_freq = gmu->gpu_freqs[gmu->current_perf_index];
+
+	/* Downstream resets the independent bus vote whenever the bus stops. */
+	gmu->bus_modifier = 0;
 
 	gpu_opp = dev_pm_opp_find_freq_exact(&gpu->pdev->dev, gpu_freq, true);
 	if (IS_ERR(gpu_opp))
@@ -1957,7 +2152,33 @@ static int a6xx_gmu_build_freq_table(struct device *dev, unsigned long *freqs,
 static int a6xx_gmu_build_bw_table(struct device *dev, unsigned long *bandwidths,
 		u32 size)
 {
-	int count = dev_pm_opp_get_opp_count(dev);
+	int count = of_property_count_u32_elems(dev->of_node,
+					       "qcom,gpu-bw-levels-kBps");
+	u32 value;
+
+	if (count > 0) {
+		if (count > size)
+			return -E2BIG;
+
+		for (int i = 0; i < count; i++) {
+			if (of_property_read_u32_index(dev->of_node,
+					"qcom,gpu-bw-levels-kBps", i, &value))
+				return -EINVAL;
+
+			if ((i == 0 && value) ||
+			    (i && value <= bandwidths[i - 1]))
+				return -EINVAL;
+
+			bandwidths[i] = value;
+		}
+
+		return count;
+	}
+
+	if (count != -EINVAL)
+		return count;
+
+	count = dev_pm_opp_get_opp_count(dev);
 	struct dev_pm_opp *opp;
 	int i, index = 0;
 	unsigned int bandwidth = 1;
@@ -1984,6 +2205,60 @@ static int a6xx_gmu_build_bw_table(struct device *dev, unsigned long *bandwidths
 	}
 
 	return index;
+}
+
+static int a6xx_gmu_bw_ranges_init(struct a6xx_gmu *gmu, struct device *dev)
+{
+	int i;
+
+	if (gmu->nr_gpu_bws <= 1)
+		return 0;
+
+	for (i = 1; i < gmu->nr_gpu_freqs; i++) {
+		struct dev_pm_opp *opp;
+		struct device_node *np;
+		unsigned long freq = gmu->gpu_freqs[i];
+		u32 bw, min_bw, max_bw;
+		int default_index, min_index, max_index;
+
+		opp = dev_pm_opp_find_freq_exact(dev, freq, true);
+		if (IS_ERR(opp))
+			return PTR_ERR(opp);
+
+		bw = dev_pm_opp_get_bw(opp, true, 0);
+		min_bw = max_bw = bw;
+		np = dev_pm_opp_get_of_node(opp);
+		if (np) {
+			of_property_read_u32(np, "qcom,opp-bw-min-kBps", &min_bw);
+			of_property_read_u32(np, "qcom,opp-bw-max-kBps", &max_bw);
+			of_node_put(np);
+		}
+		dev_pm_opp_put(opp);
+
+		default_index = a6xx_gmu_find_bw_index(gmu, bw);
+		min_index = a6xx_gmu_find_bw_index(gmu, min_bw);
+		max_index = a6xx_gmu_find_bw_index(gmu, max_bw);
+		if (default_index < 0 || min_index < 0 || max_index < 0 ||
+		    min_index > default_index || default_index > max_index)
+			return -EINVAL;
+
+		gmu->gpu_bw_default[i] = default_index;
+		gmu->gpu_bw_min[i] = min_index;
+		gmu->gpu_bw_max[i] = max_index;
+		gmu->bus_scaling |= min_index != max_index;
+	}
+
+	gmu->current_bw_index =
+		gmu->gpu_bw_default[gmu->current_perf_index];
+
+	if (gmu->bus_scaling) {
+		gmu->bus_norm_max = A620_GPUBW_NORM_MAX;
+		dev_info_once(gmu->dev,
+			      "Dynamic GPU bandwidth enabled with %d GMU levels\n",
+			      gmu->nr_gpu_bws);
+	}
+
+	return 0;
 }
 
 static int a6xx_gmu_pwrlevels_probe(struct a6xx_gmu *gmu)
@@ -2021,14 +2296,58 @@ static int a6xx_gmu_pwrlevels_probe(struct a6xx_gmu *gmu)
 	 * The GMU also handles GPU Interconnect Votes so build a list
 	 * of DDR bandwidths from the GPU OPP table
 	 */
-	if (info->bcms)
+	if (info->bcms) {
 		gmu->nr_gpu_bws = a6xx_gmu_build_bw_table(&gpu->pdev->dev,
 			gmu->gpu_bw_table, ARRAY_SIZE(gmu->gpu_bw_table));
+		if (gmu->nr_gpu_bws < 0)
+			return gmu->nr_gpu_bws;
+
+		ret = a6xx_gmu_bw_ranges_init(gmu, &gpu->pdev->dev);
+		if (ret)
+			return ret;
+	}
 
 	/* Build the list of RPMh votes that we'll send to the GMU */
 	ret = a6xx_gmu_rpmh_votes_init(gmu);
 
 	return ret;
+}
+
+static int a6xx_gmu_lm_probe(struct a6xx_gmu *gmu)
+{
+	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
+	struct adreno_gpu *adreno_gpu = &a6xx_gpu->base;
+	u32 speedbin;
+	int ret;
+
+	if (!adreno_is_a620(adreno_gpu))
+		return 0;
+
+	ret = nvmem_cell_read_variable_le_u32(&adreno_gpu->base.pdev->dev,
+					      "gaming_bin", &gmu->gaming_bin);
+	if (ret)
+		return ret;
+
+	ret = adreno_read_speedbin(&adreno_gpu->base.pdev->dev, &speedbin);
+	if (ret)
+		return ret;
+
+	ret = nvmem_cell_read_variable_le_u32(&adreno_gpu->base.pdev->dev,
+					      "isense_slope", &gmu->lm_slope);
+	if (ret)
+		return ret;
+
+	/* live DTS enables LM only on bins carrying throttle-pwrlevel: 0/158. */
+	if (speedbin != 0 && speedbin != 158)
+		return 0;
+
+	gmu->lm_throttle_mask = BIT(gmu->nr_gpu_freqs - 1);
+	gmu->lm_enabled = true;
+	dev_info_once(gmu->dev,
+		      "A620 LM enabled for speed-bin %u (gaming=%u slope=%#x)\n",
+		      speedbin, gmu->gaming_bin, gmu->lm_slope);
+
+	return 0;
 }
 
 static int a6xx_gmu_acd_probe(struct a6xx_gmu *gmu)
@@ -2077,6 +2396,12 @@ static int a6xx_gmu_acd_probe(struct a6xx_gmu *gmu)
 	}
 
 	cmd->num_levels = cmd_idx;
+	if (adreno_is_a620(adreno_gpu) && cmd_idx > 6) {
+		DRM_DEV_ERROR(gmu->dev,
+			      "A620 ACD table has %d levels, firmware supports 6\n",
+			      cmd_idx);
+		return -EINVAL;
+	}
 
 	/* It is a problem if qmp node is unavailable when ACD is required */
 	if (cmd->enable_by_level && IS_ERR_OR_NULL(gmu->qmp)) {
@@ -2350,8 +2675,9 @@ int a6xx_gmu_init(struct a6xx_gpu *a6xx_gpu, struct device_node *node)
 		return ret;
 
 	/* Set GMU idle level */
-	gmu->idle_level = (adreno_gpu->info->quirks & ADRENO_QUIRK_IFPC) ?
-		GMU_IDLE_STATE_IFPC : GMU_IDLE_STATE_ACTIVE;
+	gmu->idle_level = (adreno_gpu->info->quirks & ADRENO_QUIRK_IFPC) &&
+		!adreno_is_a620(adreno_gpu) ? GMU_IDLE_STATE_IFPC :
+		GMU_IDLE_STATE_ACTIVE;
 
 	pm_runtime_enable(gmu->dev);
 
@@ -2506,7 +2832,13 @@ int a6xx_gmu_init(struct a6xx_gpu *a6xx_gpu, struct device_node *node)
 	gmu->gxpd = dev_pm_domain_attach_by_name(gmu->dev, "gx");
 
 	/* Get the power levels for the GMU and GPU */
-	a6xx_gmu_pwrlevels_probe(gmu);
+	ret = a6xx_gmu_pwrlevels_probe(gmu);
+	if (ret)
+		goto detach_gxpd;
+
+	ret = a6xx_gmu_lm_probe(gmu);
+	if (ret)
+		goto detach_gxpd;
 
 	ret = a6xx_gmu_acd_probe(gmu);
 	if (ret)

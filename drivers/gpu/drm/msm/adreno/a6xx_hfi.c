@@ -818,8 +818,7 @@ static int a6xx_hfi_send_bw_table(struct a6xx_gmu *gmu)
 		a619_build_bw_table(msg);
 	else if (adreno_is_a640_family(adreno_gpu))
 		a640_build_bw_table(msg);
-	else if (adreno_is_a650(adreno_gpu) ||
-		 (adreno_gpu->chip_id & 0xfffff000) == 0x06020000)
+	else if (adreno_is_a650(adreno_gpu) || adreno_is_a620(adreno_gpu))
 		/* picasso/lito A620：与 kona a650 同为 GMU 2.0/fw 2.1.8 代，
 		 * 用 a650 的"single off"表。原 fallback 落到 a6xx_build_bw_table
 		 * （a630 时代的 cmd-db 地址）导致 GMU 投票 fault → graceful
@@ -860,21 +859,74 @@ static int a6xx_hfi_feature_ctrl_msg(struct a6xx_gmu *gmu, u32 feature, u32 enab
 
 #define IFPC_LONG_HYST 0x1680
 
+int a6xx_hfi_set_ifpc(struct a6xx_gmu *gmu, bool enable)
+{
+	return a6xx_hfi_feature_ctrl_msg(gmu, HFI_FEATURE_IFPC, enable,
+					 enable ? IFPC_LONG_HYST : 0);
+}
+
 static int a6xx_hfi_enable_ifpc(struct a6xx_gmu *gmu)
 {
 	if (gmu->idle_level != GMU_IDLE_STATE_IFPC)
 		return 0;
 
-	return a6xx_hfi_feature_ctrl_msg(gmu, HFI_FEATURE_IFPC, 1, IFPC_LONG_HYST);
+	return a6xx_hfi_set_ifpc(gmu, true);
+}
+
+static int a6xx_hfi_enable_lm(struct a6xx_gmu *gmu)
+{
+	struct a6xx_hfi_msg_set_value msg = {
+		.type = HFI_VALUE_LM_CS0,
+		.data = gmu->lm_slope,
+	};
+	int ret;
+
+	if (!gmu->lm_enabled)
+		return 0;
+
+	ret = a6xx_hfi_feature_ctrl_msg(gmu, HFI_FEATURE_LM, 1,
+					gmu->lm_throttle_mask);
+	if (ret) {
+		DRM_DEV_ERROR(gmu->dev, "Unable to enable LM (%d)\n", ret);
+		return ret;
+	}
+
+	ret = a6xx_hfi_send_msg(gmu, HFI_H2F_MSG_SET_VALUE, &msg,
+				sizeof(msg), NULL, 0);
+	if (ret)
+		DRM_DEV_ERROR(gmu->dev, "Unable to send LM slope (%d)\n", ret);
+
+	return ret;
 }
 
 static int a6xx_hfi_enable_acd(struct a6xx_gmu *gmu)
 {
 	struct a6xx_hfi_acd_table *acd_table = &gmu->acd_table;
+	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
+	struct adreno_gpu *adreno_gpu = &a6xx_gpu->base;
 	int ret;
 
 	if (!acd_table->enable_by_level)
 		return 0;
+
+	/*
+	 * The A620 firmware uses the downstream lito ordering: install the
+	 * characterized per-level table before enabling the ACD feature.
+	 */
+	if (adreno_is_a620(adreno_gpu)) {
+		ret = a6xx_hfi_send_msg(gmu, HFI_H2F_MSG_ACD, acd_table,
+					sizeof(*acd_table), NULL, 0);
+		if (ret) {
+			DRM_DEV_ERROR(gmu->dev, "Unable to send ACD table (%d)\n", ret);
+			return ret;
+		}
+
+		ret = a6xx_hfi_feature_ctrl_msg(gmu, HFI_FEATURE_ACD, 1, 0);
+		if (ret)
+			DRM_DEV_ERROR(gmu->dev, "Unable to enable ACD (%d)\n", ret);
+
+		return ret;
+	}
 
 	/* Enable ACD feature at GMU */
 	ret = a6xx_hfi_feature_ctrl_msg(gmu, HFI_FEATURE_ACD, 1, 0);
@@ -991,6 +1043,10 @@ int a6xx_hfi_start(struct a6xx_gmu *gmu, int boot_state)
 		return ret;
 
 	ret = a6xx_hfi_enable_acd(gmu);
+	if (ret)
+		return ret;
+
+	ret = a6xx_hfi_enable_lm(gmu);
 	if (ret)
 		return ret;
 

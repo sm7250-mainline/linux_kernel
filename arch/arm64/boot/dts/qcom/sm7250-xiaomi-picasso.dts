@@ -664,6 +664,17 @@
 				bits = <0x05 0x08>;
 				phandle = <0x4e>;
 			};
+
+			gpu-gaming-bin@212 {
+				reg = <0x212 0x01>;
+				bits = <0x00 0x01>;
+				phandle = <0x10b>;
+			};
+
+			gpu-lm-efuse@45c8 {
+				reg = <0x45c8 0x04>;
+				phandle = <0x10c>;
+			};
 		};
 
 		rng@793000 {
@@ -1820,6 +1831,7 @@
 			interrupts-extended = <0x46 0x00 0x00 0x01>;
 			mboxes = <0x46 0x00 0x00>;
 			#clock-cells = <0x00>;
+			phandle = <0x107>;
 		};
 
 		/* live dts 实测：lito refgen 在 0xff1000（kona 同款 IP）；
@@ -1985,47 +1997,142 @@
 			iommus = <0x4b 0x00 0x401>;
 			operating-points-v2 = <0x4c>;
 			qcom,gmu = <0x4d>;
-			nvmem-cells = <0x4e>;
-			nvmem-cell-names = "speed_bin";
+			nvmem-cells = <0x4e 0x10b 0x10c>;
+			nvmem-cell-names = "speed_bin", "gaming_bin", "isense_slope";
+			/*
+			 * Mainline GMU consumes one peak-bandwidth path and converts it
+			 * to the SH0/MC0/ACV RPMh BCM votes carried in HFI.
+			 */
+			interconnects = <0x6d 0x09 0x00 0x6e 0x01 0x00>;
+			interconnect-names = "gfx-mem";
+			/*
+			 * Full live-DTS grp3d table.  The default OPP bandwidth is
+			 * adjusted independently within each OPP's min/max range.
+			 */
+			qcom,gpu-bw-levels-kBps = <0 400000 800000 1200000
+				1804800 2188000 2724000 3072000 4068000
+				5412000 6220000 7216000 8371200>;
 			#cooling-cells = <0x02>;
 			status = "okay";
+			phandle = <0x108>;
 
 			zap-shader {
 				memory-region = <0x4f>;
 			};
 
 			opp-table {
-				compatible = "operating-points-v2";
+				compatible = "operating-points-v2-adreno", "operating-points-v2";
 				phandle = <0x4c>;
 
 				opp-750000000 {
 					opp-hz = <0x00 0x2cb41780>;
 					opp-level = <0x180>;
-					opp-supported-hw = <0x07>;
+					opp-peak-kBps = <6220000>;
+					qcom,opp-bw-min-kBps = <5412000>;
+					qcom,opp-bw-max-kBps = <8371200>;
+					qcom,opp-acd-level = <0xa02c5ffd>;
+					opp-supported-hw = <0x08>;
 				};
 
-				opp-625000000 {
+				opp-670000000 {
+					opp-hz = <0x00 0x27ef6380>;
+					opp-level = <0x140>;
+					opp-peak-kBps = <6220000>;
+					qcom,opp-bw-min-kBps = <5412000>;
+					qcom,opp-bw-max-kBps = <8371200>;
+					qcom,opp-acd-level = <0xa02c5ffd>;
+					opp-supported-hw = <0x08>;
+				};
+
+				/* ACD characterization differs between legacy and v2 bins. */
+				opp-625000000-0 {
 					opp-hz = <0x00 0x2540be40>;
 					opp-level = <0x100>;
+					opp-peak-kBps = <6220000>;
+					qcom,opp-bw-min-kBps = <5412000>;
+					qcom,opp-bw-max-kBps = <8371200>;
+					qcom,opp-acd-level = <0x802c5ffd>;
 					opp-supported-hw = <0x03>;
 				};
 
-				opp-500000000 {
-					opp-hz = <0x00 0x1dcd6500>;
-					opp-level = <0xc0>;
-					opp-supported-hw = <0x0f>;
+				opp-625000000-1 {
+					opp-hz = <0x00 0x2540be40>;
+					opp-level = <0x100>;
+					opp-peak-kBps = <6220000>;
+					qcom,opp-bw-min-kBps = <5412000>;
+					qcom,opp-bw-max-kBps = <8371200>;
+					qcom,opp-acd-level = <0x802d5ffd>;
+					opp-supported-hw = <0x18>;
 				};
 
-				opp-400000000 {
+				opp-540000000 {
+					opp-hz = <0x00 0x202fbf00>;
+					opp-level = <0x100>;
+					opp-peak-kBps = <4068000>;
+					qcom,opp-bw-min-kBps = <3072000>;
+					qcom,opp-bw-max-kBps = <8371200>;
+					qcom,opp-acd-level = <0x802c5ffd>;
+					opp-supported-hw = <0x04>;
+				};
+
+				opp-500000000-0 {
+					opp-hz = <0x00 0x1dcd6500>;
+					opp-level = <0xe0>;
+					opp-peak-kBps = <4068000>;
+					qcom,opp-bw-min-kBps = <3072000>;
+					qcom,opp-bw-max-kBps = <6220000>;
+					qcom,opp-acd-level = <0xa02c5ffd>;
+					opp-supported-hw = <0x03>;
+				};
+
+				opp-500000000-1 {
+					opp-hz = <0x00 0x1dcd6500>;
+					opp-level = <0xe0>;
+					opp-peak-kBps = <4068000>;
+					qcom,opp-bw-min-kBps = <3072000>;
+					qcom,opp-bw-max-kBps = <6220000>;
+					qcom,opp-acd-level = <0xa02d5ffd>;
+					opp-supported-hw = <0x18>;
+				};
+
+				opp-400000000-0 {
 					opp-hz = <0x00 0x17d78400>;
-					opp-level = <0x80>;
-					opp-supported-hw = <0x0f>;
+					opp-level = <0xc0>;
+					opp-peak-kBps = <3072000>;
+					qcom,opp-bw-min-kBps = <2188000>;
+					qcom,opp-bw-max-kBps = <4068000>;
+					qcom,opp-acd-level = <0xa02c5ffd>;
+					opp-supported-hw = <0x07>;
+				};
+
+				opp-400000000-1 {
+					opp-hz = <0x00 0x17d78400>;
+					opp-level = <0xc0>;
+					opp-peak-kBps = <3072000>;
+					qcom,opp-bw-min-kBps = <2188000>;
+					qcom,opp-bw-max-kBps = <4068000>;
+					qcom,opp-acd-level = <0x802e5ffd>;
+					opp-supported-hw = <0x18>;
 				};
 
 				opp-275000000 {
 					opp-hz = <0x00 0x10642ac0>;
+					opp-level = <0x80>;
+					opp-peak-kBps = <2188000>;
+					qcom,opp-bw-min-kBps = <2188000>;
+					qcom,opp-bw-max-kBps = <3072000>;
+					qcom,opp-acd-level = <0x802f5ffd>;
+					opp-supported-hw = <0x1f>;
+				};
+
+				opp-150000000 {
+					opp-hz = <0x00 0x08f0d180>;
 					opp-level = <0x40>;
-					opp-supported-hw = <0x0f>;
+					opp-peak-kBps = <1804800>;
+					qcom,opp-bw-min-kBps = <1804800>;
+					qcom,opp-bw-max-kBps = <2724000>;
+					qcom,opp-acd-level = <0x802f5ffd>;
+					opp-supported-hw = <0x07>;
 				};
 			};
 		};
@@ -2041,6 +2148,7 @@
 			power-domains = <0x50 0x00 0x50 0x01>;
 			power-domain-names = "cx", "gx";
 			iommus = <0x4b 0x05 0x400>;
+			qcom,qmp = <0x107>;
 			operating-points-v2 = <0x51>;
 			status = "okay";
 			phandle = <0x4d>;
@@ -2456,6 +2564,15 @@
 					temperature = <0x17318>;
 					hysteresis = <0x7d0>;
 					type = "passive";
+					phandle = <0x109>;
+				};
+			};
+
+			cooling-maps {
+
+				map0 {
+					trip = <0x109>;
+					cooling-device = <0x108 0xffffffff 0xffffffff>;
 				};
 			};
 		};
@@ -2471,6 +2588,15 @@
 					temperature = <0x17318>;
 					hysteresis = <0x7d0>;
 					type = "passive";
+					phandle = <0x10a>;
+				};
+			};
+
+			cooling-maps {
+
+				map0 {
+					trip = <0x10a>;
+					cooling-device = <0x108 0xffffffff 0xffffffff>;
 				};
 			};
 		};

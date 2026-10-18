@@ -182,6 +182,89 @@ static const struct adreno_reglist a620_hwcg[] = {
 	{},
 };
 
+/* A620 register state restored by SQE after preemption and IFPC exit. */
+static const u32 a620_pwrup_reglist_regs[] = {
+	REG_A6XX_VSC_ADDR_MODE_CNTL,
+	REG_A6XX_GRAS_ADDR_MODE_CNTL,
+	REG_A6XX_RB_ADDR_MODE_CNTL,
+	REG_A6XX_PC_ADDR_MODE_CNTL,
+	REG_A6XX_HLSQ_ADDR_MODE_CNTL,
+	REG_A6XX_VFD_ADDR_MODE_CNTL,
+	REG_A6XX_VPC_ADDR_MODE_CNTL,
+	REG_A6XX_UCHE_ADDR_MODE_CNTL,
+	REG_A6XX_SP_ADDR_MODE_CNTL,
+	REG_A6XX_TPL1_ADDR_MODE_CNTL,
+	REG_A6XX_UCHE_WRITE_RANGE_MAX,
+	REG_A6XX_UCHE_WRITE_RANGE_MAX + 1,
+	REG_A6XX_UCHE_TRAP_BASE,
+	REG_A6XX_UCHE_TRAP_BASE + 1,
+	REG_A6XX_UCHE_WRITE_THRU_BASE,
+	REG_A6XX_UCHE_WRITE_THRU_BASE + 1,
+	REG_A6XX_UCHE_GMEM_RANGE_MIN,
+	REG_A6XX_UCHE_GMEM_RANGE_MIN + 1,
+	REG_A6XX_UCHE_GMEM_RANGE_MAX,
+	REG_A6XX_UCHE_GMEM_RANGE_MAX + 1,
+	REG_A6XX_UCHE_FILTER_CNTL,
+	REG_A6XX_UCHE_CACHE_WAYS,
+	REG_A6XX_UCHE_MODE_CNTL,
+	REG_A6XX_RB_NC_MODE_CNTL,
+	REG_A6XX_TPL1_NC_MODE_CNTL,
+	REG_A6XX_SP_NC_MODE_CNTL,
+	REG_A6XX_PC_DBG_ECO_CNTL,
+	REG_A6XX_RB_CONTEXT_SWITCH_GMEM_SAVE_RESTORE_ENABLE,
+	REG_A6XX_RBBM_GBIF_CLIENT_QOS_CNTL,
+	REG_A6XX_CP_PROTECT(47),
+	REG_A6XX_TPL1_BICUBIC_WEIGHTS_TABLE(0),
+	REG_A6XX_TPL1_BICUBIC_WEIGHTS_TABLE(1),
+	REG_A6XX_TPL1_BICUBIC_WEIGHTS_TABLE(2),
+	REG_A6XX_TPL1_BICUBIC_WEIGHTS_TABLE(3),
+	REG_A6XX_TPL1_BICUBIC_WEIGHTS_TABLE(4),
+	REG_A6XX_GBIF_PERF_PWR_CNT_EN,
+	REG_A6XX_GBIF_PERF_CNT_SEL,
+	REG_A6XX_GBIF_PERF_PWR_CNT_SEL,
+};
+DECLARE_ADRENO_REGLIST_LIST(a620_pwrup_reglist);
+
+static const u32 a620_ifpc_reglist_regs[] = {
+	REG_A6XX_CP_CHICKEN_DBG,
+	REG_A6XX_CP_DBG_ECO_CNTL,
+	REG_A6XX_CP_PROTECT_CNTL,
+	REG_A6XX_CP_PROTECT(0),
+	REG_A6XX_CP_PROTECT(1),
+	REG_A6XX_CP_PROTECT(2),
+	REG_A6XX_CP_PROTECT(3),
+	REG_A6XX_CP_PROTECT(4),
+	REG_A6XX_CP_PROTECT(5),
+	REG_A6XX_CP_PROTECT(6),
+	REG_A6XX_CP_PROTECT(7),
+	REG_A6XX_CP_PROTECT(8),
+	REG_A6XX_CP_PROTECT(9),
+	REG_A6XX_CP_PROTECT(10),
+	REG_A6XX_CP_PROTECT(11),
+	REG_A6XX_CP_PROTECT(12),
+	REG_A6XX_CP_PROTECT(13),
+	REG_A6XX_CP_PROTECT(14),
+	REG_A6XX_CP_PROTECT(15),
+	REG_A6XX_CP_PROTECT(16),
+	REG_A6XX_CP_PROTECT(17),
+	REG_A6XX_CP_PROTECT(18),
+	REG_A6XX_CP_PROTECT(19),
+	REG_A6XX_CP_PROTECT(20),
+	REG_A6XX_CP_PROTECT(21),
+	REG_A6XX_CP_PROTECT(22),
+	REG_A6XX_CP_PROTECT(23),
+	REG_A6XX_CP_PROTECT(24),
+	REG_A6XX_CP_PROTECT(25),
+	REG_A6XX_CP_PROTECT(26),
+	REG_A6XX_CP_PROTECT(27),
+	REG_A6XX_CP_PROTECT(28),
+	REG_A6XX_CP_PROTECT(29),
+	REG_A6XX_CP_PROTECT(30),
+	REG_A6XX_CP_PROTECT(31),
+	REG_A6XX_CP_AHB_CNTL,
+};
+DECLARE_ADRENO_REGLIST_LIST(a620_ifpc_reglist);
+
 static const struct adreno_reglist a630_hwcg[] = {
 	{REG_A6XX_RBBM_CLOCK_CNTL_SP0, 0x22222222},
 	{REG_A6XX_RBBM_CLOCK_CNTL_SP1, 0x22222222},
@@ -888,13 +971,14 @@ static const struct adreno_info a6xx_gpus[] = {
 	}, {
 		.chip_ids = ADRENO_CHIP_IDS(0x06020002),
 		.family = ADRENO_6XX_GEN3,
-		/* picasso/lito A620（Adreno 620 @ 750MHz，SM7250）。固件名与
+		/* picasso/lito A620（SM7250）。固件名与
 		 * YAAP ROM vendor 文件逐字一致（ROM 配套内核 gpulist 写死）：
 		 * sqe=a650_sqe.fw、gmu=a650_gmu.bin、zap=a620_zap.mdt+bXX。
 		 * 下游实锤：REV(6,2,0,ANY)、GMU 2.0、a650 家族（GEN3）、
 		 * gmem=SZ_512K、prim_fifo_threshold=0x10000。chipid 0x06020002
 		 * = find_chipid 对 compatible "qcom,adreno-620.2" 的解析值。
-		 * speedbin fuse 0/132/115 = 下游 lito-gpu.dtsi 三个 SKU。 */
+		 * speedbin 及各 bin 的频率上限来自 live DTS。
+		 */
 		.fw = {
 			[ADRENO_FW_SQE] = "a650_sqe.fw",
 			[ADRENO_FW_GMU] = "a650_gmu.bin",
@@ -902,14 +986,19 @@ static const struct adreno_info a6xx_gpus[] = {
 		.gmem = SZ_512K,
 		.inactive_period = DRM_MSM_INACTIVE_PERIOD,
 		.quirks = ADRENO_QUIRK_HAS_CACHED_COHERENT |
-			  ADRENO_QUIRK_HAS_HW_APRIV,
+			  ADRENO_QUIRK_HAS_HW_APRIV |
+			  ADRENO_QUIRK_PREEMPTION |
+			  ADRENO_QUIRK_IFPC,
 		.funcs = &a6xx_gpu_funcs,
 		.zapfw = "a620_zap.mdt",
 		.a6xx = &(const struct a6xx_info) {
 			.hwcg = a620_hwcg,
 			.protect = &a650_protect,
+			.pwrup_reglist = &a620_pwrup_reglist,
+			.ifpc_reglist = &a620_ifpc_reglist,
 			.gbif_cx = a640_gbif,
-			.gmu_cgc_mode = 0x00020200,
+			/* Downstream A620 uses the common A620/A650 CGC value. */
+			.gmu_cgc_mode = 0x00020202,
 			.prim_fifo_threshold = 0x00010000,
 			.bcms = (const struct a6xx_bcm[]) {
 				{ .name = "SH0", .buswidth = 16 },
@@ -926,6 +1015,8 @@ static const struct adreno_info a6xx_gpus[] = {
 			{ 0, 0 },
 			{ 132, 1 },
 			{ 115, 2 },
+			{ 158, 3 },
+			{ 165, 4 },
 		),
 	}, {
 		.chip_ids = ADRENO_CHIP_IDS(0x06020100),

@@ -15,6 +15,7 @@
 #include <linux/soc/qcom/llcc-qcom.h>
 
 #define GPU_PAS_ID 13
+#define A620_GMU_CX_GMU_WFI_CONFIG	0x1f802
 
 static u64 a6xx_gmu_get_timestamp(struct msm_gpu *gpu)
 {
@@ -680,6 +681,8 @@ static void a6xx_set_hwcg(struct msm_gpu *gpu, bool state)
 			state ? cgc_delay : 0);
 	gmu_write(&a6xx_gpu->gmu, REG_A6XX_GPU_GMU_AO_GMU_CGC_HYST_CNTL,
 			state ? cgc_hyst : 0);
+	if (adreno_is_a620(adreno_gpu))
+		gmu_write(gmu, A620_GMU_CX_GMU_WFI_CONFIG, state ? 2 : 0);
 
 	if (!adreno_gpu->info->a6xx->hwcg) {
 		gpu_write(gpu, REG_A7XX_RBBM_CLOCK_CNTL_GLOBAL, 1);
@@ -806,7 +809,7 @@ static void a6xx_set_ubwc_config(struct msm_gpu *gpu)
 		  qcom_ubwc_macrotile_mode(cfg));
 }
 
-static void a7xx_patch_pwrup_reglist(struct msm_gpu *gpu)
+static void a6xx_patch_pwrup_reglist(struct msm_gpu *gpu)
 {
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
 	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(adreno_gpu);
@@ -816,13 +819,16 @@ static void a7xx_patch_pwrup_reglist(struct msm_gpu *gpu)
 	struct cpu_gpu_lock *lock = ptr;
 	u32 *dest = (u32 *)&lock->regs[0];
 	u32 dyn_pwrup_reglist_count = 0;
+	u16 ifpc_list_len = 0;
 	int i;
 
 	lock->gpu_req = lock->cpu_req = lock->turn = 0;
 
 	reglist = adreno_gpu->info->a6xx->ifpc_reglist;
 	if (reglist) {
-		lock->ifpc_list_len = reglist->count;
+		ifpc_list_len = reglist->count;
+		if (!adreno_is_a620(adreno_gpu))
+			lock->ifpc_list_len = reglist->count;
 
 		/*
 		 * For each entry in each of the lists, write the offset and the current
@@ -835,11 +841,19 @@ static void a7xx_patch_pwrup_reglist(struct msm_gpu *gpu)
 	}
 
 	reglist = adreno_gpu->info->a6xx->pwrup_reglist;
-	lock->preemption_list_len = reglist->count;
+	if (!adreno_is_a620(adreno_gpu))
+		lock->preemption_list_len = reglist->count;
 
 	for (i = 0; i < reglist->count; i++) {
 		*dest++ = reglist->regs[i];
 		*dest++ = gpu_read(gpu, reglist->regs[i]);
+	}
+
+	if (adreno_is_a620(adreno_gpu)) {
+		lock->list_offset = ifpc_list_len * 2;
+		lock->list_length = (ifpc_list_len + reglist->count) * 2;
+		a6xx_gpu->dynamic_sel_reglist_offset = lock->list_length;
+		return;
 	}
 
 	/*
@@ -900,10 +914,31 @@ static int a7xx_preempt_start(struct msm_gpu *gpu)
 
 static int a6xx_cp_init(struct msm_gpu *gpu)
 {
+	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
+	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(adreno_gpu);
 	struct msm_ringbuffer *ring = gpu->rb[0];
+	bool reglist = adreno_is_a620(adreno_gpu) &&
+		(adreno_gpu->info->quirks &
+		 (ADRENO_QUIRK_PREEMPTION | ADRENO_QUIRK_IFPC));
+
+	if (reglist) {
+		/* Match the downstream A6xx ordinal layout including reglist. */
+		OUT_PKT7(ring, CP_ME_INIT, 11);
+		OUT_RING(ring, GENMASK(3, 0) | BIT(5) | BIT(6) | BIT(8));
+		OUT_RING(ring, 0x00000003);
+		OUT_RING(ring, 0x20000000);
+		OUT_RING(ring, 0x00000000);
+		OUT_RING(ring, 0x00000000);
+		OUT_RING(ring, 0x00000000);
+		OUT_RING(ring, 0x00000002);
+		OUT_RING(ring, lower_32_bits(a6xx_gpu->pwrup_reglist_iova));
+		OUT_RING(ring, upper_32_bits(a6xx_gpu->pwrup_reglist_iova));
+		OUT_RING(ring, 0x00000000);
+		OUT_RING(ring, 0x00000000);
+		goto flush;
+	}
 
 	OUT_PKT7(ring, CP_ME_INIT, 8);
-
 	OUT_RING(ring, 0x0000002f);
 
 	/* Enable multiple hardware contexts */
@@ -923,6 +958,7 @@ static int a6xx_cp_init(struct msm_gpu *gpu)
 	OUT_RING(ring, 0x00000000);
 	OUT_RING(ring, 0x00000000);
 
+flush:
 	a6xx_flush(gpu, ring);
 
 	return a6xx_idle(gpu, ring) ? 0 : -EINVAL;
@@ -1177,6 +1213,84 @@ int a6xx_zap_shader_init(struct msm_gpu *gpu)
 			   A6XX_CP_APRIV_CNTL_CDREAD | \
 			   A6XX_CP_APRIV_CNTL_CDWRITE)
 
+/* GPU_CC registers are exposed in the GMU aperture as dword offsets. */
+#define A620_GPUCC_GFX3D_CMD		0x24407
+#define A620_GPUCC_GFX3D_CFG		0x24408
+#define A620_GPUCC_GFX3D_CBCR		0x24415
+#define A620_GPUCC_GX_GMU_CBCR		0x24419
+
+#define A620_GPUCC_RCG_UPDATE		BIT(0)
+#define A620_GPUCC_RCG_ROOT_ENABLE	BIT(1)
+#define A620_GPUCC_RCG_ROOT_OFF		BIT(31)
+#define A620_GMU_GX_HM_CLK_OFF		BIT(7)
+
+#define A620_GBIF_READ0_BEATS		34
+#define A620_GBIF_READ1_BEATS		35
+#define A620_GBIF_WRITE0_BEATS		46
+#define A620_GBIF_WRITE1_BEATS		47
+
+static void a620_bus_counters_init(struct msm_gpu *gpu)
+{
+	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(to_adreno_gpu(gpu));
+	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
+	u32 enable = GENMASK(3, 0) | GENMASK(17, 16);
+	u32 selectors = A620_GBIF_READ0_BEATS |
+		(A620_GBIF_READ1_BEATS << 8) |
+		(A620_GBIF_WRITE0_BEATS << 16) |
+		(A620_GBIF_WRITE1_BEATS << 24);
+
+	if (!gmu->bus_scaling)
+		return;
+
+	/* Clear, select and enable four beat counters plus two stall counters. */
+	gpu_write(gpu, REG_A6XX_GBIF_PERF_PWR_CNT_CLR, enable);
+	gpu_write(gpu, REG_A6XX_GBIF_PERF_PWR_CNT_CLR, 0);
+	gpu_write(gpu, REG_A6XX_GBIF_PERF_CNT_SEL, selectors);
+	/* Fixed power counters 0/1 select DDR wait channels 0/1. */
+	gpu_write(gpu, REG_A6XX_GBIF_PERF_PWR_CNT_SEL, BIT(8));
+	gpu_write(gpu, REG_A6XX_GBIF_PERF_PWR_CNT_EN, enable);
+	memset(gmu->bus_counter, 0, sizeof(gmu->bus_counter));
+}
+
+static void a620_lm_hw_init(struct a6xx_gmu *gmu)
+{
+	u32 val;
+
+	if (!gmu->lm_enabled)
+		return;
+
+	val = (0x10 << 8) | (0x16 << 16) | (0x0f << 24);
+	gmu_rmw(gmu, REG_A6XX_GMU_CX_GMU_POWER_COUNTER_SELECT_0,
+		GENMASK(31, 8), val);
+	gmu_write(gmu, REG_A6XX_GMU_AO_SPARE_CNTL, 1);
+	memset(gmu->lm_counter, 0, sizeof(gmu->lm_counter));
+	gmu->lm_busy_raw = 0;
+	gmu->lm_busy_cycles = 0;
+}
+
+static int a620_gfx3d_clock_enable(struct a6xx_gmu *gmu)
+{
+	u32 val;
+
+	/* Reproduce the sequence validated on the lito GMU clock controller. */
+	gmu_write(gmu, A620_GPUCC_GX_GMU_CBCR, 1);
+	udelay(20);
+
+	gmu_write(gmu, A620_GPUCC_GFX3D_CMD, A620_GPUCC_RCG_ROOT_ENABLE);
+	gmu_poll_timeout(gmu, A620_GPUCC_GFX3D_CMD, val,
+			 !(val & A620_GPUCC_RCG_ROOT_OFF), 1, 500);
+
+	/* Re-latch the branch after the root has been forced on. */
+	gmu_write(gmu, A620_GPUCC_GFX3D_CBCR, 0);
+	udelay(20);
+	gmu_write(gmu, A620_GPUCC_GFX3D_CBCR, 1);
+	gmu_write(gmu, A620_GPUCC_GFX3D_CMD,
+		  A620_GPUCC_RCG_ROOT_ENABLE | A620_GPUCC_RCG_UPDATE);
+
+	return gmu_poll_timeout(gmu, REG_A6XX_GMU_SPTPRAC_PWR_CLK_STATUS,
+				val, !(val & A620_GMU_GX_HM_CLK_OFF), 1, 500);
+}
+
 static int hw_init(struct msm_gpu *gpu)
 {
 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
@@ -1185,6 +1299,7 @@ static int hw_init(struct msm_gpu *gpu)
 	u64 gmem_range_min;
 	unsigned int i;
 	int ret;
+	bool a620_native_clock = false;
 
 	if (!adreno_has_gmu_wrapper(adreno_gpu)) {
 		/* Make sure the GMU keeps the GPU on while we set it up */
@@ -1193,53 +1308,50 @@ static int hw_init(struct msm_gpu *gpu)
 			return ret;
 
 		/*
-		 * picasso/lito A620 (chipid 0x0602xxxx)：GMU fw 2.1.8 的 OOB
-		 * GPU_SET 上电序列无法点亮 gfx3d 根时钟——GDSC 抬起、RCG 指源、
-		 * 分支 enable 置位全部完成（GMU log 以 0xdeadba55 自述重试失败
-		 * 58 次），唯独根时钟不起、GPU 核心寄存器读写全灭。实测矩阵：
-		 * fw 配置的 PLL0 虽然 mode 位报 LOCKED 但输出实际死（lock 位
-		 * 不可信）；根使能需要"ROOT_EN 强制 + 分支 0→1 重触发 +
-		 * UPDATE"组合拳，且组合拳只在源真正运行时有效——切到 XO 后
-		 * 组合拳全通（GPU 以 19.2MHz 完整初始化、zap 认证、fbdev
-		 * 渲染全链验证）。fw 成功时 SPTPRAC bit7 已清零，本序列不
-		 * 执行（幂等）。性能恢复（PLL0/gpll0 高频档）见 TODO。
-		 * 寄存器为 GPU 基址相对 dword 偏移：
-		 *   0x24407 = GPU_CC gfx3d RCG CMD  (GPU_CC+0x101c)
-		 *   0x24408 = GPU_CC gfx3d RCG CFG  (GPU_CC+0x1020)
-		 *   0x24415 = GPU_CC gfx3d CBCR     (GPU_CC+0x1054)
-		 *   0x24419 = GPU_CC gx_gmu CBCR    (GPU_CC+0x1064)
+		 * The lito GMU firmware programs PLL0 and the gfx3d RCG, but the
+		 * root sometimes remains gated after GPU_SET.  Keep the firmware
+		 * selected source so the speed-bin-specific OPP (and later DCVS)
+		 * remains effective, then apply the platform-validated root/branch
+		 * relatch sequence.  XO is retained only as a last-resort bring-up
+		 * fallback, rather than unconditionally pinning the GPU to 19.2MHz.
 		 */
-		if ((adreno_gpu->chip_id & 0xfffff000) == 0x06020000 &&
-		    (gmu_read(gmu, REG_A6XX_GMU_SPTPRAC_PWR_CLK_STATUS) & 0x80)) {
-			int w;
+		if (adreno_is_a620(adreno_gpu) &&
+		    (gmu_read(gmu, REG_A6XX_GMU_SPTPRAC_PWR_CLK_STATUS) &
+		     A620_GMU_GX_HM_CLK_OFF)) {
+			u32 cfg = gmu_read(gmu, A620_GPUCC_GFX3D_CFG);
 
-			/* gx_gmu 分支（成功路径实证步骤，无害） */
-			gmu_write(gmu, 0x24419, 0x1);
-			udelay(20);
+			ret = a620_gfx3d_clock_enable(gmu);
+			if (ret) {
+				dev_warn_once(&gpu->pdev->dev,
+					      "gfx3d source %#x failed, falling back to XO\n",
+					      cfg);
 
-			/* RCG 切到 XO（src0，必活）+ UPDATE */
-			gmu_write(gmu, 0x24408, 0x001);
-			gmu_write(gmu, 0x24407, 0x1);
-			udelay(100);
+				/* src=XO, HID divider=1; preserve the proven boot path. */
+				gmu_write(gmu, A620_GPUCC_GFX3D_CFG, 0x1);
+				gmu_write(gmu, A620_GPUCC_GFX3D_CMD,
+					  A620_GPUCC_RCG_UPDATE);
+				udelay(100);
 
-			/* ROOT_EN 强制根使能（主线 clk_rcg2_set_force_enable 原语） */
-			gmu_write(gmu, 0x24407, 0x2);
-			for (w = 0; w < 500; w++) {
-				if (!(gmu_read(gmu, 0x24407) & 0x80000000))
-					break;
-				udelay(1);
+				ret = a620_gfx3d_clock_enable(gmu);
+				if (ret) {
+					ret = dev_err_probe(&gpu->pdev->dev, ret,
+						"gfx3d root clock did not turn on\n");
+					goto out;
+				}
+
+				dev_warn_once(&gpu->pdev->dev,
+					      "gfx3d is running from the 19.2 MHz XO fallback\n");
+			} else {
+				dev_info_once(&gpu->pdev->dev,
+					      "A620 gfx3d root enabled, target %lu Hz (cfg=%#x)\n",
+					      gmu->freq, cfg);
 			}
-
-			/* 分支 0→1 重触发 + 组合 UPDATE */
-			gmu_write(gmu, 0x24415, 0x0);
-			udelay(20);
-			gmu_write(gmu, 0x24415, 0x1);
-			gmu_write(gmu, 0x24407, 0x3);	/* ROOT_EN | UPDATE */
-			udelay(100);
-
-			if (gmu_read(gmu, REG_A6XX_GMU_SPTPRAC_PWR_CLK_STATUS) & 0x80)
-				DRM_DEV_ERROR(&gpu->pdev->dev,
-					"gfx3d root clock did not turn on\n");
+		} else if (adreno_is_a620(adreno_gpu)) {
+			a620_native_clock = true;
+			dev_info_once(&gpu->pdev->dev,
+				      "A620 gfx3d root enabled by GMU, target %lu Hz (cfg=%#x)\n",
+				      gmu->freq,
+				      gmu_read(gmu, A620_GPUCC_GFX3D_CFG));
 		}
 	}
 
@@ -1377,13 +1489,17 @@ static int hw_init(struct msm_gpu *gpu)
 		gpu_write(gpu, REG_A6XX_PC_DBG_ECO_CNTL,
 			  adreno_gpu->info->a6xx->prim_fifo_threshold);
 
+	/* Downstream disables TSE skip on A620 to avoid stale cache state. */
+	if (adreno_is_a620(adreno_gpu))
+		gpu_rmw(gpu, REG_A6XX_PC_DBG_ECO_CNTL, 0, BIT(9));
+
 	/* Set the AHB default slave response to "ERROR" */
 	gpu_write(gpu, REG_A6XX_CP_AHB_CNTL, 0x1);
 
 	/* Turn on performance counters */
 	gpu_write(gpu, REG_A6XX_RBBM_PERFCTR_CNTL, 0x1);
 
-	if (adreno_is_a7xx(adreno_gpu)) {
+	if (adreno_gpu->info->quirks & ADRENO_QUIRK_IFPC) {
 		/* Turn on the IFPC counter (countable 4 on XOCLK4) */
 		gmu_write(&a6xx_gpu->gmu, REG_A6XX_GMU_CX_GMU_POWER_COUNTER_SELECT_1,
 			  FIELD_PREP(GENMASK(7, 0), 0x4));
@@ -1404,7 +1520,8 @@ static int hw_init(struct msm_gpu *gpu)
 		gpu_write(gpu, REG_A6XX_RBBM_INTERFACE_HANG_INT_CNTL, (1 << 30) | 0x4fffff);
 	else if (adreno_is_a619(adreno_gpu))
 		gpu_write(gpu, REG_A6XX_RBBM_INTERFACE_HANG_INT_CNTL, (1 << 30) | 0x3fffff);
-	else if (adreno_is_a610(adreno_gpu) || adreno_is_a702(adreno_gpu))
+	else if (adreno_is_a610(adreno_gpu) || adreno_is_a620(adreno_gpu) ||
+		 adreno_is_a702(adreno_gpu))
 		gpu_write(gpu, REG_A6XX_RBBM_INTERFACE_HANG_INT_CNTL, (1 << 30) | 0x3ffff);
 	else
 		gpu_write(gpu, REG_A6XX_RBBM_INTERFACE_HANG_INT_CNTL, (1 << 30) | 0x1fffff);
@@ -1430,6 +1547,8 @@ static int hw_init(struct msm_gpu *gpu)
 	/* Enable the power counter */
 	gmu_rmw(gmu, REG_A6XX_GMU_CX_GMU_POWER_COUNTER_SELECT_0, 0xff, BIT(5));
 	gmu_write(gmu, REG_A6XX_GMU_CX_GMU_POWER_COUNTER_ENABLE, 1);
+	a620_bus_counters_init(gpu);
+	a620_lm_hw_init(gmu);
 
 	/* Protect registers from the CP */
 	a6xx_set_cp_protect(gpu);
@@ -1531,8 +1650,9 @@ static int hw_init(struct msm_gpu *gpu)
 	/* Enable the SQE_to start the CP engine */
 	gpu_write(gpu, REG_A6XX_CP_SQE_CNTL, 1);
 
-	if (adreno_is_a7xx(adreno_gpu) && !a6xx_gpu->pwrup_reglist_emitted) {
-		a7xx_patch_pwrup_reglist(gpu);
+	if ((adreno_is_a7xx(adreno_gpu) || adreno_is_a620(adreno_gpu)) &&
+	    !a6xx_gpu->pwrup_reglist_emitted) {
+		a6xx_patch_pwrup_reglist(gpu);
 		a6xx_gpu->pwrup_reglist_emitted = true;
 	}
 
@@ -1576,6 +1696,18 @@ out:
 
 	/* Last step - yield the ringbuffer */
 	a7xx_preempt_start(gpu);
+
+	if (!ret && adreno_is_a620(adreno_gpu)) {
+		ret = a6xx_gmu_set_ifpc(gmu, a620_native_clock);
+		if (ret)
+			DRM_DEV_ERROR(gmu->dev, "Unable to update A620 IFPC (%d)\n", ret);
+		else if (a620_native_clock)
+			dev_info_once(gmu->dev,
+				      "A620 IFPC enabled after native GMU clock start\n");
+		else
+			dev_warn_once(gmu->dev,
+				      "A620 IFPC disabled because gfx3d needed host relatch/fallback\n");
+	}
 
 	/*
 	 * Tell the GMU that we are done touching the GPU and it can start power
@@ -2394,6 +2526,36 @@ static u64 a6xx_gpu_busy(struct msm_gpu *gpu, unsigned long *out_sample_rate)
 			REG_A6XX_GMU_CX_GMU_POWER_COUNTER_XOCLK_0_L,
 			REG_A6XX_GMU_CX_GMU_POWER_COUNTER_XOCLK_0_H);
 
+	if (a6xx_gpu->gmu.lm_enabled) {
+		struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
+		u64 a, b, c, lost, raw_delta;
+		s64 remainder, weighted;
+
+		a = a6xx_gmu_counter_delta(gmu_read64(gmu,
+			REG_A6XX_GMU_CX_GMU_POWER_COUNTER_XOCLK_1_L,
+			REG_A6XX_GMU_CX_GMU_POWER_COUNTER_XOCLK_1_H),
+			&gmu->lm_counter[0]);
+		b = a6xx_gmu_counter_delta(gmu_read64(gmu,
+			REG_A6XX_GMU_CX_GMU_POWER_COUNTER_XOCLK_2_L,
+			REG_A6XX_GMU_CX_GMU_POWER_COUNTER_XOCLK_2_H),
+			&gmu->lm_counter[1]);
+		c = a6xx_gmu_counter_delta(gmu_read64(gmu,
+			REG_A6XX_GMU_CX_GMU_POWER_COUNTER_XOCLK_3_L,
+			REG_A6XX_GMU_CX_GMU_POWER_COUNTER_XOCLK_3_H),
+			&gmu->lm_counter[2]);
+
+		remainder = (s64)c - (s64)a - (s64)b * 12;
+		weighted = (s64)a * 42 + (s64)b * 500 +
+			div_s64(remainder, 22) * 917;
+		lost = weighted > 0 ? div_s64(weighted, 1000) : 0;
+		raw_delta = a6xx_gmu_counter_delta(busy_cycles,
+						   &gmu->lm_busy_raw);
+		if (lost > raw_delta)
+			lost = 0;
+		gmu->lm_busy_cycles += raw_delta - lost;
+		busy_cycles = gmu->lm_busy_cycles;
+	}
+
 	return busy_cycles;
 }
 
@@ -2452,7 +2614,7 @@ static uint32_t a6xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 	 * This is true only on an A6XX_GEN1 with GMU, has IFPC enabled and a super old SQE firmware
 	 * without 'whereami' support
 	 */
-	WARN_ONCE((to_adreno_gpu(gpu)->info->quirks & ADRENO_QUIRK_IFPC),
+	WARN_ONCE(a6xx_gpu->gmu.idle_level == GMU_IDLE_STATE_IFPC,
 		"Can't read CP_RB_RPTR register reliably\n");
 
 	return ring->memptrs->rptr = gpu_read(gpu, REG_A6XX_CP_RB_RPTR);
@@ -2460,6 +2622,7 @@ static uint32_t a6xx_get_rptr(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 
 static bool a6xx_progress(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 {
+	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(to_adreno_gpu(gpu));
 	struct msm_cp_state cp_state;
 	bool progress;
 
@@ -2469,7 +2632,7 @@ static bool a6xx_progress(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 	 * Lets trust the hang detection in HW and lie to the caller that
 	 * there was progress.
 	 */
-	if (to_adreno_gpu(gpu)->info->quirks & ADRENO_QUIRK_IFPC)
+	if (a6xx_gpu->gmu.idle_level == GMU_IDLE_STATE_IFPC)
 		return true;
 
 	cp_state = (struct msm_cp_state) {
@@ -2505,7 +2668,7 @@ static bool a6xx_progress(struct msm_gpu *gpu, struct msm_ringbuffer *ring)
 static void
 perfcntr_select(struct msm_ringbuffer *ring, enum adreno_pipe pipe,
 		uint32_t regidx, uint32_t *countables, uint32_t nr,
-		uint32_t **reglist)
+			uint32_t **reglist, bool a6xx_pairs)
 {
 	OUT_PKT4(ring, regidx, nr);
 	for (unsigned i = 0; i < nr; i++)
@@ -2515,6 +2678,12 @@ perfcntr_select(struct msm_ringbuffer *ring, enum adreno_pipe pipe,
 		return;
 
 	for (unsigned i = 0; i < nr; i++) {
+		if (a6xx_pairs) {
+			*(*reglist)++ = regidx + i;
+			*(*reglist)++ = countables[i];
+			continue;
+		}
+
 		/*
 		 * Bitfield is in same position on a7xx, but only 2 bits..
 		 * which is sufficient for NONE/BR/BV:
@@ -2534,8 +2703,18 @@ a6xx_perfcntr_configure(struct msm_gpu *gpu, struct msm_ringbuffer *ring,
 	enum adreno_pipe pipe = PIPE_NONE;
 	uint32_t *reglist = NULL;
 	uint32_t *reglist_sel_start;
+	bool a6xx_pairs = adreno_is_a620(adreno_gpu);
 
-	if (to_adreno_gpu(gpu)->info->family >= ADRENO_7XX_GEN1) {
+	if (a6xx_pairs) {
+		struct cpu_gpu_lock *lock = a6xx_gpu->pwrup_reglist_ptr;
+
+		WARN_ON(!a6xx_gpu->pwrup_reglist_emitted);
+		reglist = (uint32_t *)&lock->regs[0];
+		reglist += a6xx_gpu->dynamic_sel_reglist_offset;
+		reglist_sel_start = reglist;
+		lock->list_length = a6xx_gpu->dynamic_sel_reglist_offset;
+		dma_wmb();
+	} else if (to_adreno_gpu(gpu)->info->family >= ADRENO_7XX_GEN1) {
 		WARN_ON(!a6xx_gpu->pwrup_reglist_emitted);
 
 		struct cpu_gpu_lock *lock = a6xx_gpu->pwrup_reglist_ptr;
@@ -2584,14 +2763,16 @@ a6xx_perfcntr_configure(struct msm_gpu *gpu, struct msm_ringbuffer *ring,
 		const struct msm_perfcntr_counter *counter = &group->counters[base];
 		unsigned nr = group_state->allocated_counters;
 		perfcntr_select(ring, pipe, counter->select_reg,
-				group_state->countables, nr, &reglist);
+					group_state->countables, nr, &reglist,
+					a6xx_pairs);
 
 		for (unsigned s = 0; s < ARRAY_SIZE(counter->slice_select_regs); s++) {
 			if (!counter->slice_select_regs[s])
 				break;
 
 			perfcntr_select(ring, pipe, counter->slice_select_regs[s],
-					group_state->countables, nr, &reglist);
+						group_state->countables, nr, &reglist,
+						a6xx_pairs);
 		}
 	}
 
@@ -2615,7 +2796,8 @@ a6xx_perfcntr_configure(struct msm_gpu *gpu, struct msm_ringbuffer *ring,
 	 */
 	if (reglist) {
 		struct cpu_gpu_lock *lock = a6xx_gpu->pwrup_reglist_ptr;
-		unsigned nr_regs = (reglist - reglist_sel_start) / 3;
+		unsigned int nr_regs = (reglist - reglist_sel_start) /
+			(a6xx_pairs ? 2 : 3);
 
 		/*
 		 * Ensure CP sees updates to the pwrup_reglist before it
@@ -2624,7 +2806,12 @@ a6xx_perfcntr_configure(struct msm_gpu *gpu, struct msm_ringbuffer *ring,
 		dma_wmb();
 
 		/* Update dynamic reglist len to include new SEL reg programming: */
-		lock->dynamic_list_len = a6xx_gpu->dynamic_sel_reglist_offset + nr_regs;
+		if (a6xx_pairs)
+			lock->list_length = a6xx_gpu->dynamic_sel_reglist_offset +
+				nr_regs * 2;
+		else
+			lock->dynamic_list_len =
+				a6xx_gpu->dynamic_sel_reglist_offset + nr_regs;
 
 		WARN_ON_ONCE(reglist > (uint32_t *)((uint8_t *)lock + PWRUP_REGLIST_SIZE));
 	}
@@ -2862,6 +3049,7 @@ const struct adreno_gpu_funcs a6xx_gpu_funcs = {
 		.gpu_busy = a6xx_gpu_busy,
 		.gpu_get_freq = a6xx_gmu_get_freq,
 		.gpu_set_freq = a6xx_gpu_set_freq,
+		.gpu_bus_update = a6xx_gmu_bus_update,
 #if defined(CONFIG_DRM_MSM_GPU_STATE)
 		.gpu_state_get = a6xx_gpu_state_get,
 		.gpu_state_put = a6xx_gpu_state_put,

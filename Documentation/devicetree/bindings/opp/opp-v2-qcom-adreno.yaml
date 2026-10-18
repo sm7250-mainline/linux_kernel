@@ -34,6 +34,18 @@ patternProperties:
 
       opp-peak-kBps: true
 
+      qcom,opp-bw-min-kBps:
+        description:
+          Minimum DDR bandwidth vote, in kBps, allowed by the GPU bus
+          governor while this OPP is active.
+        $ref: /schemas/types.yaml#/definitions/uint32
+
+      qcom,opp-bw-max-kBps:
+        description:
+          Maximum DDR bandwidth vote, in kBps, allowed by the GPU bus
+          governor while this OPP is active.
+        $ref: /schemas/types.yaml#/definitions/uint32
+
       opp-supported-hw: true
 
       qcom,opp-acd-level:
