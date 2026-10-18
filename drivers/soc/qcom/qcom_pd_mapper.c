@@ -654,6 +654,7 @@ static const struct of_device_id qcom_pdm_domains[] __maybe_unused = {
 	{ .compatible = "qcom,sm6115", .data = sm6115_domains, },
 	{ .compatible = "qcom,sm6350", .data = sm6350_domains, },
 	{ .compatible = "qcom,sm7150", .data = sm7150_domains, },
+	{ .compatible = "qcom,sm7250", .data = sm6350_domains, },
 	{ .compatible = "qcom,sm7225", .data = sm6350_domains, },
 	{ .compatible = "qcom,sm7325", .data = sc7280_domains, },
 	{ .compatible = "qcom,sm8150", .data = sm8150_domains, },
@@ -724,6 +725,9 @@ static struct qcom_pdm_data *qcom_pdm_start(void)
 		pr_err("PDM: error adding server %d\n", ret);
 		goto err_stop;
 	}
+
+	pr_info("PDM: platform '%s' ready with %d domains\n",
+		match->compatible, i);
 
 	return data;
 

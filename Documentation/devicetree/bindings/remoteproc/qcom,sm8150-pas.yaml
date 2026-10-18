@@ -24,6 +24,9 @@ properties:
           - enum:
               - qcom,qcs615-cdsp-pas
           - const: qcom,sm8150-cdsp-pas
+      - items:
+          - const: qcom,sm7250-adsp-pas
+          - const: qcom,sm8250-adsp-pas
       - enum:
           - qcom,sc8180x-adsp-pas
           - qcom,sc8180x-cdsp-pas
@@ -107,6 +110,7 @@ allOf:
               - qcom,sm8150-adsp-pas
               - qcom,sm8150-cdsp-pas
               - qcom,sm8150-slpi-pas
+              - qcom,sm7250-adsp-pas
               - qcom,sm8250-adsp-pas
               - qcom,sm8250-cdsp-pas
               - qcom,sm8250-slpi-pas
@@ -165,6 +169,7 @@ allOf:
           enum:
             - qcom,sc8180x-slpi-pas
             - qcom,sm8150-slpi-pas
+            - qcom,sm7250-adsp-pas
             - qcom,sm8250-adsp-pas
             - qcom,sm8250-slpi-pas
     then:
