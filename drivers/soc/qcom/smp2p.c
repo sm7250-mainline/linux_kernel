@@ -278,6 +278,9 @@ static void qcom_smp2p_start_in(struct qcom_smp2p *smp2p)
 			if (!strcmp(buf, entry->name)) {
 				entry->value = &in->entries[i].value;
 				entry->last_value = readl(entry->value);
+				dev_info(smp2p->dev,
+					 "matched early inbound SMP2P entry '%s', initial value 0x%x\n",
+					 entry->name, entry->last_value);
 				break;
 			}
 		}
@@ -303,6 +306,10 @@ static void qcom_smp2p_notify_in(struct qcom_smp2p *smp2p)
 			memcpy(buf, in->entries[i].name, sizeof(buf));
 			if (!strcmp(buf, entry->name)) {
 				entry->value = &in->entries[i].value;
+				entry->last_value = readl(entry->value);
+				dev_info(smp2p->dev,
+					 "matched inbound SMP2P entry '%s', initial value 0x%x\n",
+					 entry->name, entry->last_value);
 				break;
 			}
 		}
@@ -701,12 +708,18 @@ static int qcom_smp2p_probe(struct platform_device *pdev)
 				goto unwind_interfaces;
 
 			list_add(&entry->node, &smp2p->inbound);
+			dev_info(&pdev->dev,
+				 "registered inbound SMP2P entry '%s'\n",
+				 entry->name);
 		} else  {
 			ret = qcom_smp2p_outbound_entry(smp2p, entry, node);
 			if (ret < 0)
 				goto unwind_interfaces;
 
 			list_add(&entry->node, &smp2p->outbound);
+			dev_info(&pdev->dev,
+				 "registered outbound SMP2P entry '%s'\n",
+				 entry->name);
 		}
 	}
 

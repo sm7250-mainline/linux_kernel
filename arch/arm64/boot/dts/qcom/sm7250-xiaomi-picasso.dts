@@ -63,11 +63,8 @@
 			"IN2_HPHR", "HPHR_OUT",
 			"IN3_AUX", "AUX_OUT",
 			"AMIC1", "MIC BIAS1",
-			"MIC BIAS1", "Handset Mic",
 			"AMIC2", "MIC BIAS2",
-			"MIC BIAS2", "Headset Mic",
 			"AMIC5", "MIC BIAS3",
-			"MIC BIAS3", "Secondary Mic",
 			"TX SWR_ADC0", "ADC1_OUTPUT",
 			"TX SWR_ADC1", "ADC2_OUTPUT",
 			"TX SWR_ADC2", "ADC3_OUTPUT",
@@ -149,6 +146,13 @@
 				sound-dai = <0x118 0x00>;
 			};
 		};
+	};
+
+	adsp-sensor-pd {
+		compatible = "qcom,adsp-sensor-pd";
+		nvmem-cells = <0x121>;
+		nvmem-cell-names = "adsp_variant";
+		status = "okay";
 	};
 
 	clocks {
@@ -664,6 +668,27 @@
 			#interrupt-cells = <0x02>;
 			phandle = <0x10f>;
 		};
+
+		sleepstate {
+			qcom,entry-name = "sleepstate";
+			#qcom,smem-state-cells = <0x01>;
+			phandle = <0x122>;
+		};
+
+		sleepstate-see {
+			qcom,entry-name = "sleepstate_see";
+			interrupt-controller;
+			#interrupt-cells = <0x02>;
+			phandle = <0x123>;
+		};
+	};
+
+	smp2p-sleepstate {
+		compatible = "qcom,smp2p-sleepstate";
+		qcom,smem-states = <0x122 0x00>;
+		interrupt-parent = <0x123>;
+		interrupts = <0x00 0x00>;
+		interrupt-names = "smp2p-sleepstate-in";
 	};
 
 	opp-table-qup {
@@ -813,6 +838,12 @@
 			gpu-lm-efuse@45c8 {
 				reg = <0x45c8 0x04>;
 				phandle = <0x10c>;
+			};
+
+			adsp-variant@210 {
+				reg = <0x213 0x01>;
+				bits = <0x01 0x02>;
+				phandle = <0x121>;
 			};
 		};
 
@@ -2135,6 +2166,7 @@
 				apr {
 					compatible = "qcom,apr-v2";
 					qcom,glink-channels = "apr_audio_svc";
+					qcom,intents = <0x200 0x14>;
 					qcom,domain = <0x04>;
 					#address-cells = <0x01>;
 					#size-cells = <0x00>;
@@ -2204,6 +2236,38 @@
 						};
 					};
 				};
+
+				fastrpc {
+					compatible = "qcom,fastrpc";
+					qcom,glink-channels = "fastrpcglink-apps-dsp";
+					label = "adsp";
+					qcom,non-secure-domain;
+					#address-cells = <0x01>;
+					#size-cells = <0x00>;
+
+					compute-cb@3 {
+						compatible = "qcom,fastrpc-compute-cb";
+						reg = <0x03>;
+						iommus = <0x2c 0x1403 0x00>;
+					};
+
+					compute-cb@4 {
+						compatible = "qcom,fastrpc-compute-cb";
+						reg = <0x04>;
+						iommus = <0x2c 0x1404 0x00>;
+					};
+
+					compute-cb@5 {
+						compatible = "qcom,fastrpc-compute-cb";
+						reg = <0x05>;
+						iommus = <0x2c 0x1405 0x00>;
+						qcom,nsessions = <0x05>;
+					};
+				};
+
+				glink-ssr {
+					qcom,glink-channels = "glink_ssr";
+				};
 			};
 		};
 
@@ -2211,6 +2275,7 @@
 			compatible = "qcom,sm8250-lpass-va-macro";
 			reg = <0x00 0x3370000 0x00 0x1000>;
 			qcom,dmic-sample-rate = <600000>;
+			vdd-micb-supply = <0x11c>;
 			clocks = <0x111 0x39 0x01 0x111 0x66 0x01 0x111 0x67 0x01>;
 			clock-names = "mclk", "macro", "dcodec";
 			#clock-cells = <0x00>;

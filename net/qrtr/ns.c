@@ -690,8 +690,11 @@ static void qrtr_ns_worker(struct work_struct *work)
 		}
 
 		if (ret < 0)
-			pr_err_ratelimited("failed while handling packet from %d:%d",
-			       sq.sq_node, sq.sq_port);
+			pr_err_ratelimited("failed while handling %s packet from %d:%d: %d\n",
+					   cmd < ARRAY_SIZE(qrtr_ctrl_pkt_strings) &&
+					   qrtr_ctrl_pkt_strings[cmd] ?
+					   qrtr_ctrl_pkt_strings[cmd] : "unknown",
+					   sq.sq_node, sq.sq_port, ret);
 	}
 
 	kfree(recv_buf);

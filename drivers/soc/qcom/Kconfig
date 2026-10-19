@@ -90,6 +90,16 @@ config QCOM_PD_MAPPER
 	  implementation of the service. It is a simpler alternative to the
 	  userspace daemon.
 
+config QCOM_ADSP_SENSOR_PD
+	tristate "Qualcomm ADSP sensor protection-domain keepalive"
+	depends on QCOM_PDR_HELPERS && OF
+	help
+	  Keep a PDR listener for the ADSP sensor protection domain. This is
+	  useful on boards whose ADSP firmware starts sensor_process as part of
+	  the audio image but which do not have a kernel sensor client yet.
+
+	  If unsure, say N.
+
 config QCOM_PMIC_PDCHARGER_ULOG
 	tristate "Qualcomm PMIC PDCharger ULOG driver"
 	depends on RPMSG
@@ -201,6 +211,16 @@ config QCOM_SMP2P
 	help
 	  Say yes here to support the Qualcomm Shared Memory Point to Point
 	  protocol.
+
+config QCOM_SMP2P_SLEEPSTATE
+	tristate "Qualcomm SMP2P sleep-state client"
+	depends on QCOM_SMP2P
+	help
+	  Keep track of the apps processor sleep state in an SMP2P entry.
+	  This is used by sensor firmware integrated in the ADSP image on some
+	  Qualcomm platforms.
+
+	  If unsure, say N.
 
 config QCOM_SMSM
 	tristate "Qualcomm Shared Memory State Machine"

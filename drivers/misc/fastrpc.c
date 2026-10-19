@@ -1483,14 +1483,22 @@ static int fastrpc_init_create_static_process(struct fastrpc_user *fl,
 		err = PTR_ERR(name);
 		goto err;
 	}
+
+	dev_info(fl->sctx->dev,
+		 "create-static request: name=%.*s namelen=%u memlen=%u sid=%d\n",
+		 init.namelen, name, init.namelen, init.memlen, fl->sctx->sid);
 	inbuf.client_id = fl->client_id;
 	inbuf.namelen = init.namelen;
 	inbuf.pageslen = 0;
 	if (!fl->cctx->remote_heap) {
 		err = fastrpc_remote_heap_alloc(fl, fl->sctx->dev, init.memlen,
 						&fl->cctx->remote_heap);
-		if (err)
+		if (err) {
+			dev_err(fl->sctx->dev,
+				"create-static heap alloc failed: name=%.*s memlen=%u err=%d\n",
+				init.namelen, name, init.memlen, err);
 			goto err_name;
+		}
 
 		/* Map if we have any heap VMIDs associated with this ADSP Static Process. */
 		if (fl->cctx->vmcount) {
@@ -1533,8 +1541,17 @@ static int fastrpc_init_create_static_process(struct fastrpc_user *fl,
 
 	err = fastrpc_internal_invoke(fl, true, FASTRPC_INIT_HANDLE,
 				      sc, args);
-	if (err)
+	if (err) {
+		dev_err(fl->sctx->dev,
+			"create-static invoke failed: name=%.*s memlen=%u err=%d\n",
+			init.namelen, name, init.memlen, err);
 		goto err_invoke;
+	}
+
+	dev_info(fl->sctx->dev,
+		 "create-static complete: name=%.*s heap=%pad size=0x%llx\n",
+		 init.namelen, name, &fl->cctx->remote_heap->dma_addr,
+		 fl->cctx->remote_heap->size);
 
 	kfree(args);
 	kfree(name);
@@ -1795,6 +1812,10 @@ static int fastrpc_device_open(struct inode *inode, struct file *filp)
 	spin_unlock_irqrestore(&cctx->lock, flags);
 	kref_init(&fl->refcount);
 
+	dev_info(&cctx->rpdev->dev,
+		 "user open: secure=%u sid=%d domain=%d\n",
+		 fl->is_secure_dev, fl->sctx->sid, cctx->domain_id);
+
 	return 0;
 }
 
@@ -1843,6 +1864,7 @@ static int fastrpc_init_attach(struct fastrpc_user *fl, int pd)
 {
 	struct fastrpc_invoke_args args[1];
 	int client_id = fl->client_id;
+	int err;
 	u32 sc;
 
 	args[0].ptr = (u64)(uintptr_t) &client_id;
@@ -1851,8 +1873,19 @@ static int fastrpc_init_attach(struct fastrpc_user *fl, int pd)
 	sc = FASTRPC_SCALARS(FASTRPC_RMID_INIT_ATTACH, 1, 0);
 	fl->pd = pd;
 
-	return fastrpc_internal_invoke(fl, true, FASTRPC_INIT_HANDLE,
-				       sc, &args[0]);
+	dev_info(fl->sctx->dev, "attach request: pd=%d sid=%d\n",
+		 pd, fl->sctx->sid);
+
+	err = fastrpc_internal_invoke(fl, true, FASTRPC_INIT_HANDLE,
+				      sc, &args[0]);
+	if (!err)
+		dev_info(fl->sctx->dev, "attach complete: pd=%d sid=%d\n",
+			 pd, fl->sctx->sid);
+	else
+		dev_err(fl->sctx->dev, "attach failed: pd=%d sid=%d err=%d\n",
+			pd, fl->sctx->sid, err);
+
+	return err;
 }
 
 static int fastrpc_invoke(struct fastrpc_user *fl, char __user *argp)
@@ -2416,6 +2449,9 @@ static int fastrpc_cb_probe(struct platform_device *pdev)
 		return rc;
 	}
 
+	dev_info(dev, "compute bank sid=%u nsessions=%u dma_bits=%u total_sessions=%u\n",
+		 sid, sessions > 0 ? sessions : 1, dma_bits, cctx->sesscount);
+
 	return 0;
 }
 
@@ -2602,6 +2638,10 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 	data->poll_mode_supported = soc_data->poll_mode_supported ||
 		of_machine_get_match(fastrpc_poll_supported_machines);
 
+	dev_info(rdev, "channel probe: domain=%s id=%d secure=%u vmids=%u poll=%u\n",
+		 domain, domain_id, secure_dsp, vmcount,
+		 data->poll_mode_supported);
+
 	switch (domain_id) {
 	case ADSP_DOMAIN_ID:
 	case MDSP_DOMAIN_ID:
@@ -2645,6 +2685,11 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 	err = of_platform_populate(rdev->of_node, NULL, NULL, rdev);
 	if (err)
 		goto err_deregister_fdev;
+
+	dev_info(rdev, "probe complete: sessions=%u users=0 node=%s\n",
+		 data->sesscount,
+		 data->fdevice ? data->fdevice->miscdev.name :
+		 data->secure_fdevice ? data->secure_fdevice->miscdev.name : "none");
 
 	return 0;
 
@@ -2699,6 +2744,8 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
 
 	of_platform_depopulate(&rpdev->dev);
 
+	dev_info(&rpdev->dev, "channel removed\n");
+
 	fastrpc_channel_ctx_put(cctx);
 }
 
@@ -2722,8 +2769,12 @@ static int fastrpc_rpmsg_callback(struct rpmsg_device *rpdev, void *data,
 	 * this sentinel rather than a real context. Drop it: a real context is
 	 * (idr_index << 4) | pd and can never collide with this value.
 	 */
-	if (rsp->ctx == FASTRPC_DSP_PD_NOTIFY_CTX)
+	if (rsp->ctx == FASTRPC_DSP_PD_NOTIFY_CTX) {
+		dev_info_ratelimited(&rpdev->dev,
+				     "DSP PD notification received, len=%d addr=0x%x\n",
+				     len, addr);
 		return 0;
+	}
 
 	ctxid = FIELD_GET(FASTRPC_CTXID_MASK, rsp->ctx);
 
@@ -2732,7 +2783,9 @@ static int fastrpc_rpmsg_callback(struct rpmsg_device *rpdev, void *data,
 	spin_unlock_irqrestore(&cctx->lock, flags);
 
 	if (!ctx) {
-		dev_err(&rpdev->dev, "No context ID matches response\n");
+		dev_err_ratelimited(&rpdev->dev,
+				    "No context ID matches response: ctx=0x%llx len=%d addr=0x%x\n",
+				    rsp->ctx, len, addr);
 		return -ENOENT;
 	}
 

@@ -1,0 +1,51 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/qcom/qcom,smp2p-sleepstate.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm SMP2P sleep-state client
+
+maintainers:
+  - Andy Gross <agross@kernel.org>
+
+description:
+  Client for an SMP2P entry that advertises whether the apps processor is awake
+  to a remote processor.  The remote-side state changes are delivered through a
+  second SMP2P interrupt entry.
+
+properties:
+  compatible:
+    const: qcom,smp2p-sleepstate
+
+  qcom,smem-states:
+    maxItems: 1
+    description:
+      Outgoing apps-awake SMP2P state.
+
+  interrupts:
+    maxItems: 1
+    description:
+      Remote sleep-state notification IRQ from the inbound SMP2P entry.
+
+  interrupt-names:
+    const: smp2p-sleepstate-in
+
+required:
+  - compatible
+  - qcom,smem-states
+  - interrupts
+  - interrupt-names
+
+additionalProperties: false
+
+examples:
+  - |
+    smp2p-sleepstate {
+        compatible = "qcom,smp2p-sleepstate";
+        qcom,smem-states = <&sleepstate_smp2p_out 0>;
+        interrupt-parent = <&sleepstate_smp2p_in>;
+        interrupts = <0 0>;
+        interrupt-names = "smp2p-sleepstate-in";
+    };
+...

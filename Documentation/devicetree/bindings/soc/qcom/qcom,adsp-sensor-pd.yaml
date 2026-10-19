@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/soc/qcom/qcom,adsp-sensor-pd.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm ADSP sensor protection-domain keepalive
+
+maintainers:
+  - Picasso mainline bring-up project
+
+description: |
+  Register a PDR listener for tms/servreg at msm/adsp/sensor_pd. This keeps
+  the sensor protection-domain state indication acknowledged on platforms whose
+  ADSP image starts sensor_process before Linux has a sensor client.
+
+properties:
+  compatible:
+    const: qcom,adsp-sensor-pd
+
+  nvmem-cells:
+    maxItems: 1
+    description: ADSP image variant fuse, used for diagnostics.
+
+  nvmem-cell-names:
+    items:
+      - const: adsp_variant
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  - |
+    adsp-sensor-pd {
+      compatible = "qcom,adsp-sensor-pd";
+      nvmem-cells = <&adsp_variant>;
+      nvmem-cell-names = "adsp_variant";
+    };
+...

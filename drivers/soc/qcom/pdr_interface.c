@@ -153,6 +153,9 @@ static int pdr_register_listener(struct pdr_handle *pdr,
 
 	pds->state = resp.curr_state;
 
+	pr_info("PDR: Listener registered for %s, state: 0x%x\n",
+		pds->service_path, pds->state);
+
 	return 0;
 }
 
@@ -253,6 +256,9 @@ static int pdr_send_indack_msg(struct pdr_handle *pdr, struct pdr_service *pds,
 
 	req.transaction_id = tid;
 	strscpy(req.service_path, pds->service_path, sizeof(req.service_path));
+
+	pr_info("PDR: Acknowledging %s transaction %u\n",
+		pds->service_path, tid);
 
 	ret = qmi_send_request(&pdr->notifier_hdl, &pds->addr,
 			       &txn, SERVREG_SET_ACK_REQ,
@@ -421,6 +427,10 @@ static int pdr_locate_service(struct pdr_handle *pdr, struct pdr_service *pds)
 				pds->service_data_valid = entry->service_data_valid;
 				pds->service_data = entry->service_data;
 				pds->instance = entry->instance;
+				pr_info("PDR: Located %s using %s: instance=%u service_data_valid=%u service_data=0x%x\n",
+					pds->service_path, pds->service_name,
+					pds->instance, pds->service_data_valid,
+					pds->service_data);
 				return 0;
 			}
 		}

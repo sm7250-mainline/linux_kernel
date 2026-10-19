@@ -142,6 +142,12 @@ int q6dsp_clock_dev_probe(struct platform_device *pdev)
 	if (!desc)
 		return -EINVAL;
 
+	/* Clock registration may reparent existing orphan consumers and invoke
+	 * clk_q6dsp_prepare() before this probe returns.  Store the provider data
+	 * before registering the first clock, not afterwards.
+	 */
+	dev_set_drvdata(dev, cc);
+
 	cc->desc = desc;
 	cc->dev = dev;
 	q6dsp_clks = desc->clks;
@@ -177,8 +183,6 @@ int q6dsp_clock_dev_probe(struct platform_device *pdev)
 	ret = devm_of_clk_add_hw_provider(dev, q6dsp_of_clk_hw_get, cc);
 	if (ret)
 		return ret;
-
-	dev_set_drvdata(dev, cc);
 
 	return 0;
 }
