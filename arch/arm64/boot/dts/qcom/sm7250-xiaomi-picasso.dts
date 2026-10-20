@@ -593,14 +593,18 @@
 	};
 };
 &ufshc {
-	/* UFS 设备复位（迭代 32）：专用 ufs_reset 组两态（0x6f/0x70），
-				   ufs-qcom 在无 reset-gpios 时按名取用；不带 "default" 态
-				   → 内核不会在设备注册期自动应用 */
+	/*
+	 * The UFS device reset line is driven by the dedicated UFS reset
+	 * pinctrl group; ufs-qcom selects these states by name when no
+	 * reset GPIO is described.
+	 */
 	pinctrl-names = "dev-reset-assert", "dev-reset-deassert";
 	pinctrl-0 = <&ufs_dev_reset_assert>;
 	pinctrl-1 = <&ufs_dev_reset_deassert>;
 	vcc-supply = <&vreg_l7c_2p95>;
+	vcc-max-microamp = <800000>;
 	vccq2-supply = <&vreg_s4a_1p8>;
+	vccq2-max-microamp = <800000>;
 	status = "okay";
 };
 &ufs_mem_phy {

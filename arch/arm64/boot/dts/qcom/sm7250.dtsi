@@ -12,6 +12,9 @@
 #include <dt-bindings/clock/qcom,gpucc-sm7250.h>
 #include <dt-bindings/power/qcom,rpmhpd.h>
 
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+#include <dt-bindings/interrupt-controller/irq.h>
+
 
 / {
 	interrupt-parent = <&intc>;
@@ -1070,13 +1073,11 @@
 			};
 		};
 		ufshc: ufshc@1d84000 {
-			compatible =
-				"qcom,sm7250-ufshc",
-				"qcom,ufshc",
-				"jedec,ufs-2.0";
+			compatible = "qcom,sm7250-ufshc", "qcom,ufshc",
+				     "jedec,ufs-2.0";
 			reg = <0 0x1d84000 0 0x3000 0 0x1d90000 0 0x8000>;
-			reg-names = "ufs_mem", "ufs_ice";
-			interrupts = <0 0x109 4>;
+			reg-names = "std", "ice";
+			interrupts = <GIC_SPI 265 IRQ_TYPE_LEVEL_HIGH>;
 			phys = <&ufs_mem_phy>;
 			phy-names = "ufsphy";
 			lanes-per-direction = <2>;
@@ -1106,12 +1107,10 @@
 				<&gcc GCC_UFS_PHY_TX_SYMBOL_0_CLK>,
 				<&gcc GCC_UFS_PHY_RX_SYMBOL_0_CLK>,
 				<&gcc GCC_UFS_PHY_RX_SYMBOL_1_CLK>;
-			/* Match the live DTS clock order, including both ICE clocks.
-						 * A missing freq-table prevents ufshcd from acquiring clocks.
-						 * ICE needs its RCG to support 75/300MHz; ref/TX/RX entries
-						 * are enable-only. P38 confirmed that enabling ICE alone
-						 * does not resolve the READ timeout.
-						 */
+/*
+			 * The ICE core RCG must be able to scale between 75 and
+			 * 300 MHz; the remaining entries are enable-only clocks.
+			 */
 			freq-table-hz =
 				<0x2faf080 0xbebc200>,
 				<0 0>,
@@ -1123,42 +1122,39 @@
 				<0 0>,
 				<0 0>,
 				<0 0>;
-			/* 迭代 29 定案：ufshc 不接 apps_smmu——下游工厂 dtsi 与用户的
-						   live_dts.dts 均无 iommus（Android 即 SMMU 旁路跑 UFS）。
-						   实验证据：三种 sid 下零 SMMU fault（disable_bypass=y 时未匹配流
-						   必打 "Blocked unknown Stream ID"）= UFS 抓取事务根本不经
-						   apps_smmu；带 iommus 时 dmam_alloc_coherent 给出 IOVA，
-						   控制器取不到描述符 → dev cmd 永不完成。去掉 iommus 走
-						   dma-direct/物理地址，与 Android 同构 */
+/*
+			 * The controller does not route transfers through the apps
+			 * SMMU: the downstream factory DT and the live DT both
+			 * have no iommus here, and dma-direct addresses work.
+			 */
 			limit-hs-gear = <3>;
-			/* 迭代 30: 带宽投票（上游 sm8250 同款两条路径）——下游 msm-bus
-						   22 档向量在主线的对应形态; phandle: 0x6c=a1noc 0x6e=mc_virt
-						   0x6d=gemnoc 0x6b=cnoc; ID: MASTER_UFS_MEM=6 SLAVE_EBI_CH0=1
-						   MASTER_AMPSS_M0=0 SLAVE_UFS_MEM_CFG=45（sm7250.h） */
+/*
+			 * Bandwidth votes for the two paths used by the upstream
+			 * SM8250 description.
+			 */
 			interconnects =
 				<&aggre1_noc 6 0>,
 				<&mc_virt 1 0>,
 				<&gem_noc 0 0>,
 				<&config_noc 45 0>;
 			interconnect-names = "ufs-ddr", "cpu-ufs";
-			/* dev-ref-clk-freq=0（19.2MHz）照抄下游 lito.dtsi；
-						   reset-gpios 已删：MIUI dtb 的 <tlmm 46> 是错误映射——
-						   lito 的 UFS 设备复位是专用 ufs_reset pin（下游 pinctrl
-						   153/本树 146，偏移 0xbc000），gpio46 实为 qup13/qdss_cti
-			               普通引脚（对照审计 2026-10-13） */
+/*
+			 * The 19.2 MHz reference clock value follows the
+			 * downstream lito DT.  The device reset uses the
+			 * dedicated UFS reset pinctrl group, not a GPIO.
+			 */
 			dev-ref-clk-freq = <0>;
 			status = "disabled";
-			vcc-max-microamp = <0xc3500>;
-			vccq2-max-microamp = <0xc3500>;
 		};
 		ufs_mem_phy: phy@1d87000 {
 			compatible = "qcom,sm7250-qmp-ufs-phy";
 			reg = <0 0x1d87000 0 0xe00>;
 			#phy-cells = <0>;
-			/* RPMH_QLINK_CLK_A (26): qphy.lvl=1 while the PHY is powered.
-						 * This is an enable-only resource vote, not a reference rate.
-						 * Bulk clock teardown drops it last; the HBA still owns its GDSC.
-						 */
+/*
+			 * The "qphy" input votes for the qphy.lvl RPMh resource
+			 * while the PHY is powered.  It is an enable-only vote,
+			 * not a rate.
+			 */
 			clock-names = "qphy", "ref", "ref_aux", "qref";
 			clocks =
 				<&rpmhcc RPMH_QLINK_CLK_A>,
@@ -1167,8 +1163,10 @@
 				<&gcc GCC_UFS_1X_CLKREF_CLK>;
 			resets = <&ufshc 0>;
 			reset-names = "ufsphy";
-			/* 迭代 29：qmp-ufs 驱动新增 sm7250 表（下游 v4-lito 值，
-						   TX/RX 尾部寄存器偏移 lito 专属） */
+/*
+			 * Values and lito-specific TX/RX offsets come from the
+			 * downstream v4-lito PHY driver.
+			 */
 			status = "disabled";
 		};
 		sdhc_1: mmc@7c4000 {
