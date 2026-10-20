@@ -63,10 +63,11 @@ enum {
 #define QCOM_UFS_MAX_GEAR 5
 #define QCOM_UFS_MAX_LANE 2
 
-/* picasso bring-up（迭代 34）：下游 ufs-qcom.h 的厂商位定义（主线无）。
- * PA_VS_CONFIG_REG1（0x9000，主线 ufs-qcom.h 已有）的
- * SAVECONFIGTIME_MODE 位域——下游 link startup 前设置（QUNIPRO_CLK_
- * GATING cap 路径）。 */
+/*
+ * PA_VS_CONFIG_REG1 SAVECONFIGTIME_MODE field from the downstream vendor
+ * headers.  The downstream host driver programs it before link startup on
+ * controllers that advertise the QUNIPRO clock gating capability.
+ */
 #define SAVECONFIGTIME_MODE_MASK	0x6000
 
 enum {
@@ -594,18 +595,18 @@ out:
 		dev_err(hba->dev, "hw clk gating enabled failed\n");
 }
 
-/* sm7250(lito) bring-up：CAP 的 64AS 位不实——UTRDL 落 4GB+（实测
- * 0x100fa1000）后控制器描述符抓取静默失败（doorbell 锁存但无完成中断）。
- * 强制 32 位使分配留在 4GB 内；Android 下游从未踩到（其分配不落 4GB+）。
- */
-static bool ufs_qcom_is_sm7250(struct ufs_hba *hba)
+static const struct ufs_qcom_drvdata ufs_qcom_default_drvdata;
+
+static const struct ufs_qcom_drvdata *ufs_qcom_drvdata(struct ufs_hba *hba)
 {
-	return of_device_is_compatible(hba->dev->of_node, "qcom,sm7250-ufshc");
+	const struct ufs_qcom_drvdata *drvdata = device_get_match_data(hba->dev);
+
+	return drvdata ? drvdata : &ufs_qcom_default_drvdata;
 }
 
 static int ufs_qcom_set_dma_mask(struct ufs_hba *hba)
 {
-	if (!ufs_qcom_is_sm7250(hba) &&
+	if (!ufs_qcom_drvdata(hba)->force_32bit_dma &&
 	    (hba->capabilities & MASK_64_ADDRESSING_SUPPORT) &&
 	    !dma_set_mask_and_coherent(hba->dev, DMA_BIT_MASK(64)))
 		return 0;
@@ -768,18 +769,20 @@ static int ufs_qcom_link_startup_notify(struct ufs_hba *hba,
 			return err;
 
 		/*
-		 * picasso bring-up（迭代 34 加，照下游 ufs_qcom_link_startup_
-		 * pre_change 的 QUNIPRO_CLK_GATING 分支——hw≥3 平台默认开
-		 * 该 cap）：link startup 前设置 PA_VS_CONFIG_REG1 的
-		 * SAVECONFIGTIME_MODE 位（0x6000）。主线仅有 device-quirk
-		 * 变体（bit12），host 端整写缺失，补齐。迭代 35 二分轮曾
-		 * 暂关，36 判明真凶为 init 期复位脉冲（见 device_reset_ctrl
-		 * 迭代 36 门），本补齐无罪，恢复启用。
+		 * Program the host-side SAVECONFIGTIME_MODE field before the
+		 * first link startup, matching the downstream QUNIPRO clock
+		 * gating path.  Mainline only handles the device quirk variant.
 		 */
-		if (ufs_qcom_is_sm7250(hba) && host->hw_ver.major >= 0x3)
+		if (ufs_qcom_drvdata(hba)->set_saveconfigtime &&
+		    host->hw_ver.major >= 0x3) {
 			err = ufshcd_dme_rmw(hba, SAVECONFIGTIME_MODE_MASK,
 					     SAVECONFIGTIME_MODE_MASK,
 					     PA_VS_CONFIG_REG1);
+			if (err)
+				dev_err(hba->dev,
+					"failed to set SAVECONFIGTIME_MODE: %d\n",
+					err);
+		}
 
 		/*
 		 * Restore HS/LS link startup mode set by bootloader
@@ -791,8 +794,10 @@ static int ufs_qcom_link_startup_notify(struct ufs_hba *hba,
 				      REG_UFS_DEBUG_SPARE_CFG);
 		break;
 	case POST_CHANGE:
-		/* picasso bring-up（迭代 36）：链路首次训练成功——此后
-		 * 设备复位脉冲解禁（EH/恢复路径；见 device_reset_ctrl）*/
+		/*
+		 * The first link startup has completed, so device reset
+		 * pulses are safe from now on.
+		 */
 		host->link_started = true;
 		ufs_qcom_link_startup_post_change(hba);
 		break;
@@ -808,11 +813,11 @@ static void ufs_qcom_device_reset_ctrl(struct ufs_hba *hba, bool asserted)
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 	int ret;
 
-	/* picasso bring-up (迭代 36)：链路首次训练成功前禁止脉冲。
-	 * 主线 ufshcd_init 在 hba_enable 前无条件复位设备，本机设备
-	 * 复位后固件启动远超该窗口（32~35 实测 link startup 连败）；
-	 * 下游 4.19 从不在 probe 期复位（只在 EH 恢复路径）。 */
-	if (ufs_qcom_is_sm7250(hba) && !host->link_started)
+	/*
+	 * A device reset pulse before the first link startup breaks link
+	 * training on platforms that defer it in their drvdata.
+	 */
+	if (ufs_qcom_drvdata(hba)->defer_device_reset && !host->link_started)
 		return;
 
 	/* reset gpio is optional */
@@ -821,13 +826,14 @@ static void ufs_qcom_device_reset_ctrl(struct ufs_hba *hba, bool asserted)
 		return;
 	}
 
-	/* picasso bring-up (迭代 32): 无 reset-gpios 时走 pinctrl 状态
-	 * （picasso 的复位脚是 TLMM 专用 ufs_reset 组，非 gpio 范围；
-	 * 状态语义照下游 4.19 ufshcd core 的同名两态） */
+	/*
+	 * Fall back to pinctrl states when the reset line is routed to a
+	 * dedicated pinctrl group that no GPIO controller can reach.
+	 */
 	if (host->dev_reset_pctrl && host->dev_reset_assert) {
 		ret = pinctrl_select_state(host->dev_reset_pctrl,
-			asserted ? host->dev_reset_assert
-				 : host->dev_reset_deassert);
+					   asserted ? host->dev_reset_assert
+						    : host->dev_reset_deassert);
 		if (ret < 0)
 			dev_err(hba->dev, "%s: %s failed with err %d\n",
 				__func__, asserted ? "Assert" : "Deassert", ret);
@@ -1476,12 +1482,11 @@ static void ufs_qcom_set_caps(struct ufs_hba *hba)
 	struct ufs_qcom_host *host = ufshcd_get_variant(hba);
 
 	/*
-	 * sm7250(lito) bring-up：时钟门控（h8+关时钟）在唤醒路径上无法恢复
-	 * （实测 HW_H8_ENTER=2/EXIT=1 失步，空闲门控后所有命令 ocs=0xf，
-	 * LUN0 INQUIRY 挂死 offline）——bring-up 阶段禁用门控与相关 PM cap，
-	 * 链路/时钟常开；功耗阶段再修 ungating（疑似需 PHY 重校准）。
+	 * Clock gating cannot be restored on the resume path on platforms
+	 * that need it disabled, so keep the link and controller clocks on
+	 * until ungating is supported.
 	 */
-	if (!ufs_qcom_is_sm7250(hba))
+	if (!ufs_qcom_drvdata(hba)->disable_clk_gating)
 		hba->caps |= UFSHCD_CAP_CLK_GATING | UFSHCD_CAP_HIBERN8_WITH_CLK_GATING;
 
 	hba->caps |= UFSHCD_CAP_CLK_SCALING | UFSHCD_CAP_WB_WITH_CLK_SCALING;
@@ -1697,9 +1702,11 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 		goto out_variant_clear;
 	}
 
-	/* picasso bring-up (迭代 32): gpiod 缺席时尝试 pinctrl 两态
-	 * （"dev-reset-assert"/"dev-reset-deassert"）。两态不全则整体
-	 * 弃用，维持"复位线可选"的上游语义 */
+	/*
+	 * Fall back to the "dev-reset-assert"/"dev-reset-deassert" pinctrl
+	 * states when no reset GPIO is described.  Both states must exist,
+	 * otherwise the reset line stays optional as before.
+	 */
 	if (!host->device_reset) {
 		host->dev_reset_pctrl = devm_pinctrl_get(dev);
 		if (!IS_ERR(host->dev_reset_pctrl)) {
@@ -1738,14 +1745,12 @@ static int ufs_qcom_init(struct ufs_hba *hba)
 
 	ufs_qcom_set_caps(hba);
 	ufs_qcom_advertise_quirks(hba);
-	/* picasso bring-up (迭代 33)：hw4 会被 advertise_quirks 打上
-	 * REINIT_AFTER_MAX_GEAR_SWITCH → ufshcd_probe_hba 的 REINIT 块
-	 * 含 device reset 脉冲（真正的 init 期脉冲源是 ufshcd_init 的
-	 * 无条件调用，见 device_reset_ctrl 的迭代 36 门——本 quirk 是
-	 * 第二个潜在脉冲源）。下游从不在 probe 期复位设备；本机
-	 * gear3==max，reinit 流程无增益。照 ufs_qcom_fw_managed_init
-	 * 的既有模式清除。 */
-	if (ufs_qcom_is_sm7250(hba))
+	/*
+	 * The hardware version 4 REINIT path contains a device reset
+	 * pulse and brings no benefit when the maximum gear is already
+	 * reached, so drop it on platforms that defer device resets.
+	 */
+	if (ufs_qcom_drvdata(hba)->defer_device_reset)
 		host->hba->quirks &= ~UFSHCD_QUIRK_REINIT_AFTER_MAX_GEAR_SWITCH;
 	ufs_qcom_set_host_params(hba);
 	ufs_qcom_set_phy_gear(host);
@@ -3110,6 +3115,13 @@ static void ufs_qcom_remove(struct platform_device *pdev)
 		platform_device_msi_free_irqs_all(hba->dev);
 }
 
+static const struct ufs_qcom_drvdata ufs_qcom_sm7250_drvdata = {
+	.force_32bit_dma = true,
+	.set_saveconfigtime = true,
+	.defer_device_reset = true,
+	.disable_clk_gating = true,
+};
+
 static const struct ufs_qcom_drvdata ufs_qcom_sm8550_drvdata = {
 	.quirks = UFSHCD_QUIRK_BROKEN_LSDBS_CAP,
 	.no_phy_retention = true,
@@ -3121,6 +3133,7 @@ static const struct ufs_qcom_drvdata ufs_qcom_sa8255p_drvdata = {
 
 static const struct of_device_id ufs_qcom_of_match[] __maybe_unused = {
 	{ .compatible = "qcom,ufshc" },
+	{ .compatible = "qcom,sm7250-ufshc", .data = &ufs_qcom_sm7250_drvdata },
 	{ .compatible = "qcom,sm8550-ufshc", .data = &ufs_qcom_sm8550_drvdata },
 	{ .compatible = "qcom,sm8650-ufshc", .data = &ufs_qcom_sm8550_drvdata },
 	{ .compatible = "qcom,sa8255p-ufshc", .data = &ufs_qcom_sa8255p_drvdata },

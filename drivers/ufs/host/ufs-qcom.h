@@ -356,18 +356,21 @@ struct ufs_qcom_host {
 	struct reset_controller_dev rcdev;
 
 	struct gpio_desc *device_reset;
-	/* picasso bring-up (迭代 32): UFS 设备复位的 pinctrl 回退。
-	 * picasso 的复位脚是 TLMM 专用 ufs_reset 组（非 gpio 范围，
-	 * gpiod 够不着），照下游 4.19 ufshcd core 语义走两个状态：
-	 * "dev-reset-assert" / "dev-reset-deassert" */
+	/*
+	 * Optional UFS device reset through pinctrl states.  Some platforms
+	 * route the reset line to a dedicated pinctrl group that no GPIO
+	 * controller can reach.  The state names follow the downstream
+	 * common UFS core: "dev-reset-assert" / "dev-reset-deassert".
+	 */
 	struct pinctrl *dev_reset_pctrl;
 	struct pinctrl_state *dev_reset_assert;
 	struct pinctrl_state *dev_reset_deassert;
-	/* picasso bring-up (迭代 36)：链路首次训练成功前禁止设备复位
-	 * 脉冲——主线 ufshcd_init 会无条件先复位设备（在 hba_enable
-	 * 前），本机设备复位后固件启动远超该窗口（迭代 32~35 实测
-	 * link startup 连败；下游从不在 probe 期复位设备）。链路建立
-	 * 后（EH/恢复路径）脉冲不受影响。 */
+	/*
+	 * Set after the first successful link startup.  Platforms that set
+	 * defer_device_reset reject reset pulses until the link has trained
+	 * at least once because ufshcd_init() would otherwise reset the
+	 * device before hba_enable() while its firmware is still booting.
+	 */
 	bool link_started;
 
 	struct ufs_host_params host_params;
@@ -382,6 +385,26 @@ struct ufs_qcom_host {
 struct ufs_qcom_drvdata {
 	enum ufshcd_quirks quirks;
 	bool no_phy_retention;
+	/*
+	 * The controller advertises 64-bit addressing but cannot fetch
+	 * transfer descriptors from above the 4 GiB boundary.
+	 */
+	bool force_32bit_dma;
+	/*
+	 * Program PA_VS_CONFIG_REG1 SAVECONFIGTIME_MODE before the first
+	 * link startup, as the downstream host driver does.
+	 */
+	bool set_saveconfigtime;
+	/*
+	 * Never pulse the UFS device reset before the first successful
+	 * link startup; probing a resetting device breaks link training.
+	 */
+	bool defer_device_reset;
+	/*
+	 * Clock gating cannot be restored on resume yet (needs PHY
+	 * re-calibration work), so keep the link clocks always on.
+	 */
+	bool disable_clk_gating;
 	const struct ufs_hba_variant_ops *vops;
 };
 
